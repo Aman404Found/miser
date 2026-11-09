@@ -26,6 +26,7 @@ TOOL_LABELS = {
 
 STATUS_LABELS = {
     "tests_passed": ("tests passed", theme.green),
+    "answered": ("answered", theme.dim),
     "incomplete": ("no more tool calls", theme.yellow),
     "truncated": ("output truncated", theme.yellow),
     "step_limit": ("step limit reached", theme.yellow),
@@ -500,6 +501,8 @@ def result_panel(bill, elapsed, width=None, prefix="task", glyphs=None):
     label, color = STATUS_LABELS.get(status, (status, theme.dim))
     if status == "tests_passed":
         glyph = g.ok
+    elif status == "answered":
+        glyph = g.info
     elif status in ("incomplete", "truncated", "step_limit", "budget_exhausted", "budget_exceeded",
                     "interrupted", "stream_interrupted", "rejected_non_coding",
                     "model_unavailable"):

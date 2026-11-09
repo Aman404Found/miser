@@ -350,7 +350,14 @@ def run_agent(task, client, runner, ledger, token_budget=24000, max_steps=16,
                     if progress:
                         progress("  · Reply truncated at the output cap; no tool call to act on")
                     return "truncated"
-                ledger.finish("incomplete", agent_message=(message.get("content") or "")[:2000],
+                content = message.get("content") or ""
+                if content.strip():
+                    # A considered text-only reply is a finished answer, not a
+                    # stall: chat and research tasks never need a tool call.
+                    ledger.finish("answered", agent_message=content[:2000],
+                                  modified_files=sorted(runner.workspace.modified))
+                    return "answered"
+                ledger.finish("incomplete", agent_message=content[:2000],
                               modified_files=sorted(runner.workspace.modified))
                 return "incomplete"
             if len(calls) > 8:

@@ -26,7 +26,7 @@ class SessionIsolationTests(unittest.TestCase):
             terminal.task("Fix discount")
             self.assertEqual(terminal.last_ledger.data["status"], "tests_passed")
             terminal.task("Add validation to pricing.py")
-            self.assertEqual(terminal.last_ledger.data["status"], "incomplete")
+            self.assertEqual(terminal.last_ledger.data["status"], "answered")
             self.assertEqual(terminal.last_diff, "")
             self.assertIn("pricing.py", terminal.workspace.modified)
             terminal.undo()

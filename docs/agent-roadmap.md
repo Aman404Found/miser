@@ -193,7 +193,8 @@ versions.
 injected instructions in a fetched page do not change tool selection (tested with
 a fixture page).
 
-> **Status (2026-11-09): implemented, live acceptance pending.** `miser/web.py`
+> **Status (2026-11-09): implemented; model-driven fetch recorded, injected-instruction
+> case unit-tested only.** `miser/web.py`
 > holds `WebAccess` (`search`, `fetch`), URL policy in `check_url`, redirect
 > re-validation, byte/char caps and an `HTMLParser`-based extractor. `web_search`
 > and `fetch_url` are the 17th and 18th tools. Fetched text is always returned in a
@@ -206,9 +207,12 @@ a fixture page).
 > `docs.python.org/3/library/pathlib.html` and `realpython.com/python-pathlib`
 > returned HTTP 200 and were converted to capped text; the second followed a live
 > redirect, confirming redirect re-validation. A Stack Overflow hit returned HTTP 403
-> (site bot protection) and the tool surfaced the error rather than retrying. What is
-> still not recorded: a *model-driven* task that cites a fetched URL and ignores
-> injected page instructions.
+> (site bot protection) and the tool surfaced the error rather than retrying.
+> Recorded live afterwards: session `runs/session-e4d476853be7` answered from a
+> fetched `docs.python.org` page (correct `Path.read_text` signature and version
+> notes, URL cited) in 4 model requests, 4 tool calls and 18,777 provider tokens.
+> The injected-instruction half remains unit-tested only: exercising it needs a
+> fixture HTTP server, and this host cannot bind sockets.
 
 ### Phase 6 — Parallelism and context
 

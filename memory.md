@@ -4,7 +4,7 @@ Living log of what has been done, what is verified, and what is next.
 Update this file at the end of every work session. Newest entries at the top of
 "Session log"; keep "Current state" accurate rather than appending forever.
 
-Last updated: 2026-11-09 (session 6)
+Last updated: 2026-11-09 (session 7)
 
 ---
 
@@ -29,15 +29,20 @@ Last updated: 2026-11-09 (session 6)
 
 - Python 3.12.3, `requires-python >=3.11`, no runtime dependencies.
 - `miser/` ≈ 27 files / ~5.8k LOC.
-- **Tests: 240 passing** — `python3 -m unittest discover -s tests -q` (exit 0, ~7.1s).
+- **Tests: 241 passing** — `python3 -m unittest discover -s tests -q` (exit 0, ~7.2s).
 - **Tools: 18** — `repo_map`, `list_files`, `find_files`, `search`, `zoom`, `recall`,
   `read_many`, `write_file`, `edit`, `edit_batch`, `apply_patch`, `blast_radius`,
   `run_tests`, `verify_claim`, `run_command`, `write_todos`, `web_search`, `fetch_url`.
 - `docs/agent-roadmap.md` Phases 1, 2, 3, 4 and 5 are implemented and covered by tests.
   Phase 5 was exercised against the real services by a host script: a real Tavily
   search returned 3 results and two real page fetches returned HTTP 200 (one of them
-  followed a live redirect). The model-driven half — a task that cites a fetched URL
-  while ignoring instructions embedded in page text — is still not recorded.
+  followed a live redirect). A model-driven fetch task is now recorded too
+  (`runs/session-e4d476853be7`, correct cited `Path.read_text` signature and version
+  notes). The injected-instruction half is unit-tested only: it needs a fixture HTTP
+  server, and this host cannot bind sockets.
+- A text-only final reply finishes as `answered` (neutral info glyph), not
+  `incomplete`; an empty reply stays `incomplete` and an output-capped reply stays
+  `truncated`. Live confirmation: `runs/session-764157a062c5`.
 - Phase 3 supervised execution exists (`miser/execution.py`), but the headless
   `python3 -m miser run` path has no approval channel, so `run_command` refuses there
   by design. Interactive `miser` and the TUI prompt per invocation.
@@ -69,6 +74,35 @@ Last updated: 2026-11-09 (session 6)
 ---
 
 ## Session log
+
+### 2026-11-09 — Session 7: `answered` status, Phase 5 model-driven run recorded
+
+- **Misleading chat status fixed.** `miser/agent.py` used to finish every no-tool-call
+  reply as `incomplete`, which the result panel rendered as a yellow "no more tool
+  calls" warning even when the model had simply answered a question. Now a non-empty
+  text reply finishes as `answered` (`agent_message` still stores the text); an empty
+  reply stays `incomplete`, and a `finish_reason == "length"` reply stays `truncated`.
+  `miser/ui/render.py` gained an `answered` label with the neutral `g.info` glyph, so it
+  cannot fall into the red failure branch. Nothing treats `answered` as passing tests.
+- Tests updated for the new semantics: `tests/test_agent.py`
+  `test_model_cannot_claim_success_without_acceptance` now asserts `answered` and that
+  the status is not `tests_passed`, plus a new `test_empty_reply_is_incomplete`;
+  `tests/test_session_isolation.py` asserts `answered` for the second-task no-op.
+- Verification: focused `python3 -m unittest tests.test_agent tests.test_session_isolation -q`
+  (28 tests OK), then full `python3 -m unittest discover -s tests -q` — **241 tests OK**
+  (exit 0, ~7.2s).
+- Live check: `python3 -m miser chat --no-tui --no-stream --model
+  gemini/gemini-3.5-flash-lite --exec "Read pricing.py and explain in one sentence what
+  discount() computes. Do not modify any files."` → session `runs/session-764157a062c5`
+  ended `status: "answered"`, 7 model requests, 7 tool calls, 17,808 provider tokens
+  (17,642 in / 166 out), no modified files, empty `patch.diff`. The panel printed
+  "· answered".
+- Phase 5 model-driven run now recorded (made at the end of session 6):
+  `runs/session-e4d476853be7`, the `docs.python.org` `Path.read_text` fetch task, 4
+  model requests, 4 tool calls, 18,777 provider tokens, correct cited answer.
+- Docs updated to match: `docs/implementation-status.md` (new final-answer section plus
+  the model-driven web run), `docs/agent-roadmap.md` (Phase 5 status block),
+  `HANDOVER_PROMPT.md` (241 tests, recorded run, `answered`).
 
 ### 2026-11-09 — Bifrost login, Phase 5 (web search and fetch)
 

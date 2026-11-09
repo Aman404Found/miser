@@ -1,5 +1,21 @@
 # Implementation status
 
+## Final-answer status update
+
+- A text reply that ends the turn with no tool call now finishes as `answered`
+  instead of `incomplete`. Chat and research tasks legitimately need no edit, and the
+  old label ("no more tool calls", yellow warning) made a correct answer look like a
+  stalled run. An empty reply still finishes as `incomplete`, and a reply cut off at
+  the output cap still finishes as `truncated`.
+- `answered` renders with the neutral info glyph in `miser/ui/render.py`; the result
+  panel reads "answered". It is never treated as passing tests — acceptance remains
+  only `tests_passed`.
+- Live check: `runs/session-764157a062c5` (7 model requests, 7 tool calls, 17,808
+  provider tokens, no files modified) ended `status: "answered"` with the answer text
+  in `agent_message` and an empty `patch.diff`.
+- Local verification: 241 tests passed, including a new empty-reply case in
+  `tests/test_agent.py`.
+
 ## Knowledge and web update (Phase 5)
 
 - Two new tools, `web_search` (Tavily) and `fetch_url`, live in `miser/web.py`
@@ -29,9 +45,17 @@
   reduced to text and capped at 8,000 characters. The Real Python fetch also had to
   follow a live redirect, so redirect re-validation is confirmed against a real
   server. One Stack Overflow result returned HTTP 403 (site bot protection); the tool
-  surfaced the error rather than retrying or bypassing it. Still pending: the
-  model-driven half of the acceptance sentence — a task that cites a fetched URL
-  while ignoring instructions embedded in the page text.
+  surfaced the error rather than retrying or bypassing it.
+- Live model-driven check: `runs/session-e4d476853be7` asked for the exact signature
+  and version-added note of `Path.read_text` from
+  `https://docs.python.org/3/library/pathlib.html`, with instructions not to answer
+  from memory. It used 4 model requests and 4 tool calls for 18,777 provider tokens,
+  and the recorded `agent_message` cites the fetched URL with
+  `Path.read_text(encoding=None, errors=None, newline=None)`, "Added in version 3.5",
+  and the 3.10 `newline` addition.
+- Still pending: the injected-instruction half of the acceptance sentence. It needs a
+  fixture HTTP server and this host cannot bind sockets, so it is covered by unit
+  tests only.
 
 ## Planning and progress update (Phase 4)
 

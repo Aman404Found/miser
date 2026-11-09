@@ -99,7 +99,19 @@ class AgentTests(unittest.TestCase):
         class Premature:
             def complete(self, *args, **kwargs):
                 return response()
-        self.assertEqual(run_agent("Fix", Premature(), self.runner, self.ledger), "incomplete")
+        # A text-only reply is recorded as an answer, never as passing tests.
+        self.assertEqual(run_agent("Fix", Premature(), self.runner, self.ledger), "answered")
+        self.assertEqual(self.ledger.data["status"], "answered")
+        self.assertNotEqual(self.ledger.data["status"], "tests_passed")
+
+    def test_empty_reply_is_incomplete(self):
+        class Silent:
+            def complete(self, *args, **kwargs):
+                result = response()
+                result["choices"][0]["message"]["content"] = ""
+                return result
+        self.assertEqual(run_agent("Fix", Silent(), self.runner, self.ledger), "incomplete")
+        self.assertEqual(self.ledger.data["status"], "incomplete")
 
     def test_length_capped_reply_is_reported_as_truncated(self):
         class LengthCapped:
