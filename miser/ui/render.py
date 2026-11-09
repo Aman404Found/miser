@@ -21,6 +21,7 @@ TOOL_LABELS = {
     "repo_map": "index", "list_files": "list", "search": "search", "zoom": "read",
     "recall": "recheck", "edit": "edit", "edit_batch": "edit", "apply_patch": "patch",
     "blast_radius": "refs", "run_tests": "test", "verify_claim": "verify",
+    "write_todos": "plan",
 }
 
 STATUS_LABELS = {
@@ -303,6 +304,10 @@ def tool_detail(name, args):
         return f'"{args.get("claim", "")[:48]}"'
     if name == "repo_map":
         return args.get("query", "") or "workspace"
+    if name == "write_todos":
+        todos = args.get("todos") or []
+        done = sum(1 for item in todos if isinstance(item, dict) and item.get("completed"))
+        return f"{done}/{len(todos)} done" if todos else ""
     return ""
 
 
@@ -326,6 +331,27 @@ def tool_result(name, event, glyphs=None):
     if detail:
         line += " " + theme.dim(detail)
     return line + timing
+
+
+def todo_list(items, total=None, completed=None, width=None, glyphs=None):
+    """One compact checklist for a ``write_todos`` update."""
+    g = _glyphs(glyphs)
+    width = max(30, width or theme.term_width())
+    items = [item for item in (items or []) if isinstance(item, dict)]
+    total = len(items) if total is None else total
+    completed = (sum(1 for item in items if item.get("completed"))
+                 if completed is None else completed)
+    done_mark = g.ok if g.fancy else "x"
+    open_mark = "○" if g.fancy else " "
+    lines = [f"  {theme.bold('plan')} {theme.dim(f'{completed}/{total} done')}"]
+    for item in items:
+        task = theme.clean(str(item.get("task", "")))
+        body = theme.clip(task, width - 8)
+        if item.get("completed"):
+            lines.append(f"  {theme.dim(g.bar)} {theme.green(done_mark)} {theme.dim(body)}")
+        else:
+            lines.append(f"  {theme.dim(g.bar)} {theme.dim(open_mark)} {body}")
+    return "\n".join(lines)
 
 
 def test_result(event, glyphs=None):

@@ -175,6 +175,10 @@ class TuiApp:
                 self.status = render.tool_running(event.get("name", ""), event.get("args") or {})
             else:
                 self.status = "working"
+                if event.get("name") == "write_todos" and event.get("ok") and event.get("items"):
+                    self.append_output(render.todo_list(event["items"],
+                                                        event.get("total"), event.get("completed"),
+                                                        self._max_width(), self.glyphs))
         elif kind == "tests":
             self.status = "tests passed" if event.get("passed") else "tests failed"
         elif kind == "compaction":

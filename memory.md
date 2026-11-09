@@ -4,7 +4,7 @@ Living log of what has been done, what is verified, and what is next.
 Update this file at the end of every work session. Newest entries at the top of
 "Session log"; keep "Current state" accurate rather than appending forever.
 
-Last updated: 2026-11-09 (session 4)
+Last updated: 2026-11-09 (session 5)
 
 ---
 
@@ -29,12 +29,11 @@ Last updated: 2026-11-09 (session 4)
 
 - Python 3.12.3, `requires-python >=3.11`, no runtime dependencies.
 - `miser/` ≈ 27 files / ~5.8k LOC.
-- **Tests: 208 passing** — `python3 -m unittest discover -s tests -q` (exit 0, ~12.8s).
-- **Tools: 15** — `repo_map`, `list_files`, `find_files`, `search`, `zoom`, `recall`,
+- **Tests: 222 passing** — `python3 -m unittest discover -s tests -q` (exit 0, ~7.2s).
+- **Tools: 16** — `repo_map`, `list_files`, `find_files`, `search`, `zoom`, `recall`,
   `read_many`, `write_file`, `edit`, `edit_batch`, `apply_patch`, `blast_radius`,
-  `run_tests`, `verify_claim`, `run_command`.
-- Roadmap phases 1–4 of `HANDOVER_PROMPT.md` were already implemented before this
-  session; `docs/agent-roadmap.md` Phases 1, 2 and 3 are now implemented.
+  `run_tests`, `verify_claim`, `run_command`, `write_todos`.
+- `docs/agent-roadmap.md` Phases 1, 2, 3 and 4 are implemented and covered by tests.
 - Phase 3 supervised execution exists (`miser/execution.py`), but the headless
   `python3 -m miser run` path has no approval channel, so `run_command` refuses there
   by design. Interactive `miser` and the TUI prompt per invocation.
@@ -66,6 +65,56 @@ Last updated: 2026-11-09 (session 4)
 ---
 
 ## Session log
+
+### 2026-11-09 — Phase 4 planning and progress
+
+Completed:
+
+1. **`miser/todos.py` (new).** `TodoList` owns the ordered plan: `MAX_TODOS = 20`,
+   `MAX_TASK_CHARS = 200`, validated `update(items)` that normalises whitespace,
+   strips empties and rejects non-string/oversized entries, a monotonically
+   increasing `revision`, `stale_checks`, and read-only `summary()` / `state()`
+   views. `progress()` reports `total`, `completed`, `next_item` and `all_done`.
+   A rejected update leaves the previous list untouched.
+2. **`miser/tools.py`.** 16th schema `write_todos`, with the invariant that a
+   successful call must re-emit the whole list (`in_progress` at most once, at most
+   one item marked in progress). `invoke()` validates the argument set is exactly
+   `{"todos"}`, records `ledger.record("todos", ...)`, and returns
+   `{revision, total, completed, next_step, items}`.
+3. **`miser/agent.py`.** `SYSTEM` tells the model to keep the list current and
+   re-emit it after each completed item. `build_messages()` emits `state["todos"]`
+   on every step, so the plan is always in context whether or not the model repeats
+   it. `run_agent` tracks whether the turn's tool calls included `write_todos`; if a
+   turn did work without re-emitting the plan, it sets `plan_reminder` and
+   increments `stale_checks` — but **only when `step + 1 < max_steps`**, because a
+   final turn cannot act on the nudge (this guard fixed the two failures seen in
+   the first focused run). `SUMMARY_KEYS` gained the todo result fields so they
+   survive compaction.
+4. **`miser/ui/render.py`.** `TOOL_LABELS["write_todos"] = "plan"`,
+   `tool_detail()` → `"d/t done"`, and `todo_list(...)` renders one compact
+   checklist (`✔`/`○`, ASCII `x`/space when unfancy) with a header.
+5. **`miser/terminal.py` / `miser/tui/app.py`.** Both render the checklist once,
+   after a successful `write_todos` tool result — one update per step, not a dump.
+6. **`tests/test_todos.py` (new, 14 tests).** Validation rejections, ordering and
+   whitespace normalisation, revision bump, immutable `progress()`/`state()`,
+   failed-update preservation, tool invoke + ledger event, exact-argument check,
+   validation-error path, stale vs fresh plan reminder, checklist rendering, and
+   `tool_detail`. `tests/test_agent.py`'s schema assertion now requires
+   `write_todos`.
+
+Verification actually run:
+
+- `python3 -m unittest tests.test_todos -v` → **14 tests, OK** (0.142s).
+- `python3 -m unittest discover -s tests -q` → **222 tests, OK**, exit 0.
+
+Not verified / not done:
+
+- No live model run has used `write_todos`; the acceptance evidence is unit tests
+  over the runner, the loop and the renderer, not a model-driven multi-step task.
+- The re-emit instruction is prompt-level. MISER nudges and re-injects the plan, but
+  it cannot force a model to rewrite the list.
+
+---
 
 ### 2026-11-09 — Phase 3 supervised execution (approved by the user)
 
@@ -226,14 +275,17 @@ Not verified / not done:
    The arbitrary-shell rule is now enforced in code: allowlist prefixes, metacharacter
    rejection, `shell=False`, per-invocation approval, real exit status,
    background + stop. Headless runs refuse because there is no approval channel.
-4. Phase 4 — `write_todos` re-emitted each step.
+4. ~~Phase 4 — `write_todos` re-emitted each step~~ — **done and tested** (14 new
+   tests, 222 total). Plan is re-injected every step, stale turns get a reminder,
+   and both interfaces render one checklist per update. Not yet exercised by a live
+   model-driven task.
 5. Phase 5 — `web_search` / `fetch_url` with the untrusted-content contract.
 6. Phase 6 — concurrent read-only tools; summarising compaction.
 7. Phase 7 — evaluation harness producing a dated `docs/benchmark-results.md` table.
 
 ## What the user may need to do
 
-- Nothing is blocked on the user for Phase 3. If a future task should run
+- Nothing is blocked on the user for Phase 4. If a future task should run
   `ruff`/`mypy`, those binaries must actually be installed; the allowlist permits them
   but does not install them.
 - Live model work should keep using `gemini/gemini-3.5-flash-lite`; the plain

@@ -171,6 +171,17 @@ twenty-turn task from drifting.
 **Acceptance:** a multi-step task's todos always reflect completed work at the end
 of the run, and the transcript shows one update per step, not a single dump.
 
+> **Status (2026-11-09): implemented.** `miser/todos.py` holds `TodoList` with
+> validation, normalisation, a revision counter and `stale_checks`.
+> `write_todos` is the 16th tool and requires the whole list on every call.
+> `build_messages()` re-injects `todos` on every step, so the plan stays in context
+> even if the model omits it, and `run_agent` sets `plan_reminder` when a turn did
+> tool work without re-emitting the list (only while another step remains).
+> The terminal and TUI render one compact checklist per successful call rather than
+> a running dump. `tests/test_todos.py` covers validation, revision, reminders and
+> rendering (14 tests; 222 total passing). What is not recorded: a live model-driven
+> multi-step task using the tool.
+
 ### Phase 5 — Knowledge and web
 
 Formalize `web_search` and `fetch_url` with the untrusted-content contract MISER

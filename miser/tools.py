@@ -8,6 +8,7 @@ import time
 
 from .execution import CommandSupervisor
 from .ledger import estimate_tokens
+from .todos import MAX_TODOS, MAX_TASK_CHARS, TodoList
 from .verification import EvidenceSearch
 from .workspace import diff_previews
 
@@ -64,6 +65,15 @@ SCHEMAS = [
     function("verify_claim", "Search official docs for versioned claim. Untrusted, unverified evidence candidates.",
              {"claim": STRING, "version": STRING, "domains": {"type": "array", "items": STRING}},
              ["claim", "version", "domains"]),
+    function("write_todos",
+             "Replace the ordered plan. Call again after EVERY completed step; keep finished items "
+             "marked completed instead of removing them. At most 20 short items.",
+             {"todos": {"type": "array", "minItems": 1, "maxItems": MAX_TODOS, "items": {
+                 "type": "object",
+                 "properties": {"task": {"type": "string", "maxLength": MAX_TASK_CHARS},
+                                "completed": {"type": "boolean"}},
+                 "required": ["task", "completed"], "additionalProperties": False}}},
+             ["todos"]),
 ]
 
 
@@ -85,6 +95,7 @@ class ToolRunner:
             max_runs=max_command_runs)
         self.test_runs = 0
         self.evidence = EvidenceSearch(ledger)
+        self.todos = TodoList()
         self.last_tests = None
         self.diffs = []
 
@@ -204,6 +215,16 @@ class ToolRunner:
                 if arguments:
                     raise ValueError("run_tests accepts no arguments")
                 result = self.run_tests()
+            elif name == "write_todos":
+                if set(arguments) != {"todos"}:
+                    raise ValueError("write_todos requires exactly the todos array")
+                items = self.todos.update(arguments.get("todos"))
+                self.ledger.record("todos", revision=self.todos.revision,
+                                   total=len(items), completed=self.todos.completed_count)
+                result = {"revision": self.todos.revision, "total": len(items),
+                          "completed": self.todos.completed_count,
+                          "next_step": self.todos.next_item,
+                          "items": [dict(item) for item in items]}
             elif name == "run_command":
                 result = self.commands.invoke(arguments)
             elif name == "verify_claim":

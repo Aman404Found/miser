@@ -31,13 +31,17 @@ run_command runs ONE allowlisted program as a literal argv array, never through 
 The host checks the allowlist and asks the user to approve each new command, so it may be refused or unavailable.
 Do not try to express pipes, redirects, or chained commands; do not circumvent tool limits through code you write.
 Use background=true only for long-running programs, then poll action=status with the returned job_id.
+For a task with three or more distinct steps, call write_todos first with the ordered plan, then call it
+again after EVERY completed step: mark that item completed and keep finished items. Never save the
+list for the end, and never mark an item completed before its work is actually done.
 Be concise. The host stops when tests pass after an edit, or when budgets/limits are reached.
 """
 
 
 SUMMARY_KEYS = ("path", "version", "edited", "unchanged", "passed", "exit_code", "timed_out",
                 "truncated", "error", "files", "command", "argv", "output", "output_truncated",
-                "job_id", "running", "elapsed_seconds")
+                "job_id", "running", "elapsed_seconds", "todos", "revision", "total",
+                "completed", "next_step")
 COMPACTION_RATIO = 0.75
 
 ARCHITECT = """You are the architect in a two-model coding workflow. Read the task and return a short,
@@ -74,12 +78,20 @@ def tool_event(name, output, elapsed):
     elif ok and name == "search":
         matches = value.get("matches") or value.get("results") or []
         detail = f"{len(matches)} match(es)" if isinstance(matches, list) and matches else ""
+    elif ok and name == "write_todos":
+        total, completed = value.get("total"), value.get("completed")
+        if isinstance(total, int) and isinstance(completed, int):
+            detail = f"{completed}/{total} done"
     event = {"type": "tool", "state": "result", "name": name, "ok": ok,
              "elapsed": elapsed, "error": str(value.get("error", ""))[:160],
              "detail": detail}
     if name == "run_tests":
         event["passed"] = value.get("passed")
         event["output"] = str(value.get("output") or "")[-1500:]
+    if name == "write_todos" and ok:
+        event["items"] = value.get("items") or []
+        event["total"] = value.get("total")
+        event["completed"] = value.get("completed")
     return event
 
 
@@ -140,7 +152,7 @@ def compact_turn(turn, content_limit=280):
 
 
 def build_messages(task, step, token_budget, runner, ledger, memory, history, initial_tests,
-                   plan=None):
+                   plan=None, plan_reminder=None):
     """Prompt for one step: bounded state plus the retained conversation turns."""
     latest_tests = None
     if runner.last_tests:
@@ -160,6 +172,10 @@ def build_messages(task, step, token_budget, runner, ledger, memory, history, in
              "working_memory": breadcrumb}
     if plan:
         state["architect_plan"] = plan
+    if runner.todos.total:
+        state["todos"] = runner.todos.state()
+        if plan_reminder:
+            state["plan_reminder"] = plan_reminder
     messages = [{"role": "system", "content": SYSTEM},
                 {"role": "user", "content": json.dumps(state)}]
     for turn in history:
@@ -217,10 +233,11 @@ def run_agent(task, client, runner, ledger, token_budget=24000, max_steps=16,
                          ("passed", "exit_code", "timed_out", "elapsed_seconds")}})
         initial_tests = {k: v for k, v in initial_data.items()
                          if k in ("passed", "exit_code", "timed_out")}
+        plan_reminder = None
         for step in range(max_steps):
             checkpoint()
             messages = build_messages(task, step + 1, token_budget, runner, ledger, memory,
-                                      history, initial_tests, plan)
+                                      history, initial_tests, plan, plan_reminder)
             estimated_input = estimate_tokens(json.dumps(messages) + json.dumps(SCHEMAS))
             # Compaction keeps the prompt bounded instead of letting old tool JSON accumulate.
             attempts = 0
@@ -233,7 +250,7 @@ def run_agent(task, client, runner, ledger, token_budget=24000, max_steps=16,
                 history.extend(kept)
                 memory.compact()
                 messages = build_messages(task, step + 1, token_budget, runner, ledger, memory,
-                                          history, initial_tests, plan)
+                                          history, initial_tests, plan, plan_reminder)
                 estimated_input = estimate_tokens(json.dumps(messages) + json.dumps(SCHEMAS))
                 if estimated_input >= before:
                     # Nothing was actually freed; recording a zero-gain compaction
@@ -328,6 +345,7 @@ def run_agent(task, client, runner, ledger, token_budget=24000, max_steps=16,
             if len(calls) > 8:
                 raise ValueError("Too many tool calls in one response")
             turn = [{"role": "assistant", "content": message.get("content"), "tool_calls": calls}]
+            emitted_plan = False
             for call in calls:
                 checkpoint()
                 name = call["function"]["name"]
@@ -346,6 +364,8 @@ def run_agent(task, client, runner, ledger, token_budget=24000, max_steps=16,
                         progress(f"  {human_tool_progress(name, args)}")
                     if activity:
                         activity({"type": "tool", "state": "start", "name": name, "args": args})
+                    if name == "write_todos":
+                        emitted_plan = True
                     tool_started = time.monotonic()
                     output = runner.invoke(name, args)
                     tool_elapsed = round(time.monotonic() - tool_started, 3)
@@ -358,6 +378,16 @@ def run_agent(task, client, runner, ledger, token_budget=24000, max_steps=16,
                                   note="Configured command passed; this is not a proof of general correctness")
                     return "tests_passed"
             history.append(turn)
+            # A turn that advanced the work but left the plan untouched makes the
+            # checklist lie to the next step, so carry one explicit nudge forward.
+            # Only a turn with a following step can act on the nudge.
+            if runner.todos.total and not emitted_plan and step + 1 < max_steps:
+                runner.todos.stale_checks += 1
+                plan_reminder = ("The todo list is stale: this step made progress without "
+                                 "rewriting it. Call write_todos again, marking finished "
+                                 "items completed and keeping the rest.")
+            else:
+                plan_reminder = None
             # Verification is host work: do not spend another model call just to
             # ask for tests, or leave a valid patch unverified when tokens run out.
             if runner.workspace.modified and runner.last_tests is None:

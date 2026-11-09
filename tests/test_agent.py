@@ -236,7 +236,7 @@ class AgentTests(unittest.TestCase):
 
     def test_schema_covers_retrieval_and_write_tools(self):
         names = {schema["function"]["name"] for schema in SCHEMAS}
-        self.assertTrue({"find_files", "read_many", "write_file"} <= names)
+        self.assertTrue({"find_files", "read_many", "write_file", "write_todos"} <= names)
         self.assertEqual(len(names), len(SCHEMAS))
         for schema in SCHEMAS:
             self.assertFalse(schema["function"]["parameters"]["additionalProperties"])

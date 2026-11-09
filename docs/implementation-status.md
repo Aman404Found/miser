@@ -1,5 +1,26 @@
 # Implementation status
 
+## Planning and progress update (Phase 4)
+
+- New 16th tool `write_todos`, backed by `miser/todos.py` (`TodoList`). The model
+  rewrites the whole ordered list on each call; the runner rejects a call whose
+  arguments are not exactly `{"todos"}`, and the list is validated before it
+  replaces the previous one, so a bad update leaves the old plan intact.
+- Limits: at most 20 items, 200 characters per task, at most one item marked
+  `in_progress` at a time. Each accepted update bumps a `revision`.
+- The plan is re-injected into every prompt as `state["todos"]`, so it is in context
+  even when the model does not repeat it. If a turn did tool work without
+  re-emitting the list, the host attaches a `plan_reminder` and increments
+  `stale_checks` — skipped on the final step, since there is nothing left to do
+  with the nudge.
+- The terminal and TUI each render one compact checklist after a successful
+  `write_todos` result (`✔`/`○`), so the transcript shows an update per step rather
+  than a single dump.
+- Local verification: 222 tests passed, including 14 new cases in
+  `tests/test_todos.py`. No live model requests were made for this update, so the
+  acceptance sentence is proven by unit tests over the runner, loop and renderer,
+  not by a model-driven task.
+
 ## Supervised execution update (Phase 3)
 
 - New 15th tool `run_command` with `action = run | status | stop`. It takes an `argv`
@@ -20,7 +41,7 @@
 - Because approval is a real channel, the headless path (`python3 -m miser run`) has
   none and therefore **refuses** `run_command`. This is intentional; only the
   interactive terminal and TUI prompt.
-- Local verification: 208 tests passed, including 8 new cases in
+- Local verification at that time: 208 tests passed, including 8 new cases in
   `tests/test_execution.py` covering allowlisted run, preserved non-zero exit,
   metacharacter refusal, unlisted-binary refusal, approval refusal, missing approval
   channel, "always", and background start/status/stop. These use real

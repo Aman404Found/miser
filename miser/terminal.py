@@ -717,7 +717,12 @@ class Terminal:
                 self.spinner.start(self._event_text(event) or "working")
             else:
                 self.spinner.stop()
-                self.say(render.tool_result(event.get("name", ""), event, self.glyphs))
+                name = event.get("name", "")
+                self.say(render.tool_result(name, event, self.glyphs))
+                if name == "write_todos" and event.get("ok") and event.get("items"):
+                    self.say(render.todo_list(event["items"],
+                                              event.get("total"), event.get("completed"),
+                                              self.width(), self.glyphs))
             return
         if kind == "tests":
             self.spinner.stop()
