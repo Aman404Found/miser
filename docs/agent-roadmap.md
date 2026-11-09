@@ -259,6 +259,30 @@ failures, tokens, wall clock, and whether the acceptance command passed.
 **Acceptance:** a `docs/benchmark-results.md` table produced by one command, with
 real numbers and a stated date, replacing any estimates.
 
+> **Status (2026-11-09): implemented and measured; golden thresholds not met.** The
+> harness was already present (`miser/evaluation.py`, `miser evaluate --demo <lang>`),
+> so this phase recorded real runs rather than new harness code. Three runs used the
+> real CLI, the real gateway and provider-reported usage (`usage_complete: true`,
+> `failed_model_requests: 0`, no compactions or fallbacks). Python and JavaScript both
+> ended `tests_passed` with one model edit and five model calls — 15,000 and 14,937
+> provider tokens, 41.3 s and 41.8 s. A fourth attempt with the default 12,000-token
+> budget ended `budget_exhausted` after four orientation calls and no edit.
+>
+> The measured result is that the fixed golden limits
+> (`GOLDEN_LIMITS = {"max_model_calls": 4, "max_provider_tokens": 6000}`) are **not**
+> reachable with this model and tool surface: `golden_tasks_passed: 0`, so
+> `miser evaluate` exits 1 even on the two solved runs. The receipt's
+> `request_component_tokens_estimate` is cumulative across requests, not per request;
+> dividing by the call count shows roughly 2,800 estimate tokens of fixed overhead per
+> call (663 instructions + 1,696 tool definitions), and observed provider prompts were
+> 2.4–3.4k per call, so a 6,000-token ceiling allows about two calls.
+>
+> **Coverage gap, stated honestly:** the fixture suite now recorded is the single
+> bug-edit task in both languages. The add-test, cross-file refactor and lint-fix
+> fixtures described in this phase are not recorded yet, so the table does not cover
+> them. 249 tests pass; the phase was documentation plus recorded runs, so no test
+> count changed. See [`docs/benchmark-results.md`](benchmark-results.md).
+
 ---
 
 ## 4. What to do first

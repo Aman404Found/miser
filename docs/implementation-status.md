@@ -1,5 +1,41 @@
 # Implementation status
 
+## Golden-task evaluation (Phase 7)
+
+- The evaluation harness was already in place (`miser/evaluation.py`,
+  `miser evaluate --demo python|javascript`), so Phase 7 recorded real runs instead of
+  adding harness code. Each run copies `examples/<lang>_bug` into an absent output
+  directory, drives the real agent loop against the configured gateway, and writes
+  `ledger.jsonl` plus `report.json` with turns, model calls, tool calls, test runs,
+  provider-reported tokens and wall clock.
+- Three runs used the real CLI and the real gateway with complete provider usage
+  (`usage_complete: true`, `failed_model_requests: 0`, no compactions, no fallbacks):
+
+  | Run | Status | Model calls | Provider tokens | Wall clock | Golden |
+  | --- | --- | --- | --- | --- | --- |
+  | `runs/golden-python-20261109a` (default budget) | `budget_exhausted` | 4 | 11,098 | 46.1 s | fail |
+  | `runs/golden-python-20261109b` (40k budget) | `tests_passed` | 5 | 15,000 | 41.3 s | fail |
+  | `runs/golden-js-20261109a` (40k budget) | `tests_passed` | 5 | 14,937 | 41.8 s | fail |
+
+  Python and JavaScript both solved with one model edit and five calls, 63 tokens
+  apart. The default-budget run spent all four calls on orientation (`find_files`, two
+  `zoom` reads, `write_todos`) and ended before any edit.
+- The measured finding is that the fixed golden limits (`max_model_calls: 4`,
+  `max_provider_tokens: 6,000`) are unreachable with this model and tool surface, so
+  `golden_tasks_passed: 0` and `miser evaluate` exits 1 even on solved tasks. That is
+  the grader working correctly, not a harness defect: a 15,000-token solve is not a
+  golden pass under a 6,000-token ceiling.
+- `request_component_tokens_estimate` in the receipt is **cumulative across requests**,
+  not per request. Per call the local estimate is roughly 663 instructions + 1,696 tool
+  definitions + ~420–450 state + history (410 growing to ~700), about 2,800 tokens of
+  fixed overhead. Observed provider prompts were 2.4–3.4k per call, so a 6,000-token
+  ceiling allows about two calls. Tool definitions are the largest fixed block.
+- Coverage gap: only the bug-edit fixture is recorded in both languages. The add-test,
+  cross-file refactor and lint-fix tasks from the roadmap are not run yet, so the table
+  does not measure them. 249 tests still pass — this phase changed docs and added
+  recorded runs, not source behavior. Full numbers and caveats live in
+  [`docs/benchmark-results.md`](benchmark-results.md).
+
 ## Parallel read-only tools and tighter compaction (Phase 6)
 
 - Independent read-only calls in one assistant turn now run on a small thread pool

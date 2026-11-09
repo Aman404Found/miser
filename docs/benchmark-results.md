@@ -24,10 +24,54 @@ meet **all** of solved, metered, call-limited, and token-limited.
 | Date | Model | Run directory | Solved | Model calls | Provider tokens | Golden | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 2026-11-08 | `gemini/gemini-3.5-flash` (configured) | `runs/golden-python-check` | no | 0 | 0 | fail | Bifrost was not listening on `localhost:8080`: the run stopped at `model_error` with `usage_complete=false`, so no token or success claim is possible. |
+| 2026-11-09 | `gemini/gemini-3.5-flash-lite` | `runs/golden-python-20261109a` | no | 4 | 11,098 (11,010 in / 88 out) | fail | Default budget (12,000 tokens / 8 steps). Status `budget_exhausted`: it listed files, read both sources, ran the tests and wrote a 0/1 plan, then had no budget left for an edit. `within_model_calls: true`, `within_provider_tokens: false`. |
+| 2026-11-09 | `gemini/gemini-3.5-flash-lite` | `runs/golden-python-20261109b` | **yes** | 5 | 15,000 (14,643 in / 357 out) | fail | Same task and model with a larger host budget (40,000 tokens / 10 steps). One edit to `pricing.py`; the automatic post-edit acceptance run passed. Misses both golden limits (5 > 4 calls, 15,000 > 6,000 tokens). |
+| 2026-11-09 | `gemini/gemini-3.5-flash-lite` | `runs/golden-js-20261109a` | **yes** | 5 | 14,937 (14,606 in / 331 out) | fail | JavaScript fixture under the same 40,000 / 10 budget. One edit to `pricing.js`; `node --test` passed. Same five-call shape as Python, within 63 tokens of it. |
 
 The blocked attempt is recorded rather than hidden: the fixture copy, ledger, and
 `report.json` remain on disk, and the run spent zero provider tokens because the request
 never reached a provider.
+
+### What the 2026-11-09 runs measure
+
+All three runs used the real CLI, the real gateway and provider-reported usage
+(`usage_complete: true`, `failed_model_requests: 0`, no compactions, no fallbacks).
+No estimate in this file is substituted for a measured value.
+
+1. **The task is solvable, and reliably so.** Python and JavaScript both ended
+   `tests_passed` with exactly one model edit and five model calls. The only
+   difference in spend was 63 tokens. The harness is not the limiting factor.
+2. **The golden limits are not met by this model and tool surface.**
+   `golden_tasks_passed: 0`, so `miser evaluate` exits 1 even on the two solved runs.
+   That exit is the grader doing its job, not a defect: a solved task that costs
+   15,000 tokens is not a golden pass under a 6,000-token ceiling.
+3. **The default 12,000-token budget cannot finish the task.** In
+   `golden-python-20261109a` the four allowed calls were spent on orientation
+   (`find_files`, two `zoom` reads, `write_todos`) and the loop ended
+   `budget_exhausted` before any edit. Provider prompt tokens per call rose
+   2,412 → 2,461 → 2,770 → 3,367 as history accumulated.
+4. **Prompt components are cumulative in the receipt, not per request.** The
+   `request_component_tokens_estimate` block sums every measured request. Dividing by
+   the call count gives the per-request figure:
+
+   | Component (local estimate, not billing) | Per request | Python run (4 calls) | Python run (5 calls) | JavaScript run (5 calls) |
+   | --- | --- | --- | --- | --- |
+   | Instructions | 663 | 2,652 | 3,315 | 3,315 |
+   | Tool definitions (18 tools) | 1,696 | 6,784 | 8,480 | 8,480 |
+   | State | ~420–450 | 1,676 | 2,231 | 2,226 |
+   | History | grows 410 → ~700 | 1,638 | 3,056 | 2,589 |
+
+   Tool definitions are the largest fixed block at roughly 1,696 estimated tokens per
+   request. Together with ~663 for instructions and ~450 for state, the fixed overhead
+   is about 2,800 estimated tokens per call before any repository content. At the
+   observed ~3,000 provider prompt tokens per call, the 6,000-token golden ceiling
+   allows roughly two calls — fewer than the three (read, read, edit) this model used
+   even in its tightest observed path.
+
+**Coverage gap, stated rather than implied:** the harness currently runs one task kind
+— the percentage-discount bug — in Python and JavaScript. The roadmap's other suite
+members (add a test, refactor across two files, fix a lint error) are not implemented,
+so this table says nothing about them.
 
 ## Tavily candidate evidence: one live call (2026-11-08)
 

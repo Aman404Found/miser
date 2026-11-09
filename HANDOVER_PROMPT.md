@@ -52,8 +52,18 @@ All foundational and interface improvements have been implemented and verified:
 
 ## 3. Master Execution Plan: Phase-by-Phase Roadmap
 
-> **Status (2026-11-09):** Phases 1–6 are implemented and covered by tests (249 passing via
-> `python3 -m unittest discover -s tests -q`). Phase 5 added `web_search` and `fetch_url`
+> **Status (2026-11-09):** Phases 1–7 are implemented and covered by tests (249 passing via
+> `python3 -m unittest discover -s tests -q`). Phase 7 recorded three real evaluations with
+> the existing `miser evaluate` harness: Python and JavaScript both solved the bug-edit
+> fixture in 5 model calls and 15,000 / 14,937 provider tokens, while the default-budget
+> run ended `budget_exhausted` after four orientation calls and no edit. All three fail
+> the fixed golden limits (4 calls, 6,000 tokens): `golden_tasks_passed: 0` and the CLI
+> exits 1 even on solved tasks, which is the grader behaving correctly. The receipt's
+> per-component token block is cumulative, not per request; per call the fixed overhead
+> is ≈2,800 estimated tokens (663 instructions + 1,696 tool definitions), so the
+> 6,000-token ceiling allows about two calls. Only the bug-edit fixture is recorded; the
+> add-test, cross-file refactor and lint-fix tasks remain unrecorded. Phase 5 added
+> `web_search` and `fetch_url`
 > with the untrusted-content contract; real search and fetch paths were exercised by a
 > host script (3 Tavily hits, two HTTP 200 page fetches, one live redirect), and a
 > model-driven task (`runs/session-e4d476853be7`) cited a fetched URL correctly. The

@@ -4,7 +4,7 @@ Living log of what has been done, what is verified, and what is next.
 Update this file at the end of every work session. Newest entries at the top of
 "Session log"; keep "Current state" accurate rather than appending forever.
 
-Last updated: 2026-11-09 (session 8)
+Last updated: 2026-11-09 (session 9)
 
 ---
 
@@ -33,7 +33,7 @@ Last updated: 2026-11-09 (session 8)
 - **Tools: 18** — `repo_map`, `list_files`, `find_files`, `search`, `zoom`, `recall`,
   `read_many`, `write_file`, `edit`, `edit_batch`, `apply_patch`, `blast_radius`,
   `run_tests`, `verify_claim`, `run_command`, `write_todos`, `web_search`, `fetch_url`.
-- `docs/agent-roadmap.md` Phases 1–6 are implemented and covered by tests.
+- `docs/agent-roadmap.md` Phases 1–7 are implemented and covered by tests.
   Phase 5 was exercised against the real services by a host script: a real Tavily
   search returned 3 results and two real page fetches returned HTTP 200 (one of them
   followed a live redirect). A model-driven fetch task is now recorded too
@@ -50,6 +50,14 @@ Last updated: 2026-11-09 (session 8)
   real local reads are slightly *slower* in parallel (thread start-up dominates);
   simulated 150 ms network calls were ~4× faster (601 ms → 151 ms for four). Outputs
   were identical either way.
+- **Phase 7 is in (recorded runs, thresholds not met).** Using the existing
+  `miser evaluate` harness, three real runs were recorded: default budget ended
+  `budget_exhausted` (4 calls, 11,098 tokens, no edit); with a 40k budget Python and
+  JavaScript both ended `tests_passed` (5 calls; 15,000 and 14,937 tokens). All three
+  fail the fixed `GOLDEN_LIMITS` (4 calls / 6,000 tokens), so `golden_tasks_passed: 0`
+  and the CLI exits 1 — correct grader behavior, not a harness bug. Per-call fixed
+  overhead is ≈2,800 estimated tokens (663 instructions + 1,696 tool definitions), and
+  the receipt's component block is cumulative, not per request.
 - A text-only final reply finishes as `answered` (neutral info glyph), not
   `incomplete`; an empty reply stays `incomplete` and an output-capped reply stays
   `truncated`. Live confirmation: `runs/session-764157a062c5`.
@@ -84,6 +92,29 @@ Last updated: 2026-11-09 (session 8)
 ---
 
 ## Session log
+
+### 2026-11-09 — Session 9: Phase 7 (golden-task evaluation, real runs)
+
+- No new harness code: `miser/evaluation.py` already implemented `miser evaluate`,
+  `GOLDEN_LIMITS = {"max_model_calls": 4, "max_provider_tokens": 6000}` and
+  `report.json`. This session recorded real runs and documented them.
+- Confirmed the default-budget failure cause from `runs/golden-python-20261109a`:
+  all four allowed calls went to orientation (`find_files`, two `zoom` reads,
+  `write_todos`) and the loop ended `budget_exhausted` before any edit. Provider prompt
+  grew 2,412 → 2,461 → 2,770 → 3,367 per call.
+- Live runs (real gateway, provider-reported usage, `usage_complete: true`, 0 failed
+  requests, 0 compactions):
+  | Run | Status | Calls | Tokens | Wall clock |
+  | --- | --- | --- | --- | --- |
+  | `runs/golden-python-20261109a` (default) | `budget_exhausted` | 4 | 11,098 | 46.1 s |
+  | `runs/golden-python-20261109b` (40k) | `tests_passed` | 5 | 15,000 | 41.3 s |
+  | `runs/golden-js-20261109a` (40k) | `tests_passed` | 5 | 14,937 | 41.8 s |
+- Docs updated: `docs/benchmark-results.md` (three rows + analysis),
+  `docs/agent-roadmap.md` (Phase 7 status), `docs/implementation-status.md` (Phase 7
+  section), `HANDOVER_PROMPT.md` (Phases 1–7).
+- Coverage gap stated: only the bug-edit fixture is recorded in both languages; the
+  add-test, cross-file refactor and lint-fix tasks are not run yet.
+- Tests unchanged at 249 (docs-only change).
 
 ### 2026-11-09 — Session 8: Phase 6 (parallel read-only tools, tighter compaction)
 
@@ -416,8 +447,14 @@ Not verified / not done:
 6. ~~Phase 6 — concurrent read-only tools; tighter compaction~~ — **done and tested**
    (249 total). Parallel helps network-bound tools (~4× simulated) and costs a little
    on local reads; decisions survive compaction.
-7. Phase 7 — evaluation harness producing a dated `docs/benchmark-results.md` table
-   (`miser evaluate`). This is the next phase.
+7. ~~Phase 7 — evaluation harness producing a dated `docs/benchmark-results.md`
+   table (`miser evaluate`)~~ — **done and measured** (docs only, 249 tests still
+   pass). Three real runs recorded; the fixed golden limits are not reachable with
+   the current model/tool surface. Next options: (a) expand the fixture suite to the
+   add-test, cross-file refactor and lint-fix tasks and record those runs; (b) reduce
+   per-call prompt overhead (tool definitions are 1,696 of ≈2,800 fixed tokens) so a
+   6,000-token golden pass becomes plausible; or (c) re-baseline `GOLDEN_LIMITS` to
+   the measured cost and say so explicitly.
 
 ## What the user may need to do
 
