@@ -1,5 +1,32 @@
 # Implementation status
 
+## Supervised execution update (Phase 3)
+
+- New 15th tool `run_command` with `action = run | status | stop`. It takes an `argv`
+  array, never a command string, and is spawned with `shell=False`; no code path
+  reaches a shell.
+- Binaries come from an allowlist of prefix rules: `python3 -m unittest`,
+  `python3 -m pytest`, `python3 -m mypy`, `pytest`, `ruff`, `mypy`, `node --test`,
+  `git status`, `git diff`. Anything else is refused with a clear message.
+- Any shell metacharacter in any argument (`; & | < > $ ` \n \r ( )`) is refused
+  before execution.
+- Each invocation is shown for approval: yes (once), no, or always for that exact
+  argv, which then runs silently for the rest of the session. The child process gets
+  only a small allowlisted environment, so `.env` credentials never reach it.
+- stdout, stderr and the real exit status are returned unchanged; a non-zero exit is
+  a result, not an exception.
+- `background=true` starts a job with a log file under `.miser/jobs/`; `action=status`
+  reports running/exit status and output, and `action=stop` kills the process group.
+- Because approval is a real channel, the headless path (`python3 -m miser run`) has
+  none and therefore **refuses** `run_command`. This is intentional; only the
+  interactive terminal and TUI prompt.
+- Local verification: 208 tests passed, including 8 new cases in
+  `tests/test_execution.py` covering allowlisted run, preserved non-zero exit,
+  metacharacter refusal, unlisted-binary refusal, approval refusal, missing approval
+  channel, "always", and background start/status/stop. These use real
+  `python3 -m unittest` invocations; no live model requests were made.
+- App-level guards are not an OS sandbox.
+
 ## Truncated-reply and live-run update
 
 - A reply that stops at the output cap (`finish_reason: "length"`) with no tool call
@@ -11,7 +38,7 @@
   `gemini/gemini-3.5-flash-lite`. Recorded in `docs/benchmark-results.md` as one run,
   not a benchmark. The gateway's `gemini-3.5-flash` route was rate-limited (429);
   `gemini-2.5-flash-lite` is listed but returns 404.
-- Local verification: 200 tests passed.
+- Local verification at that time: 200 tests passed.
 
 ## Session reliability update
 

@@ -154,6 +154,14 @@ never run through a shell.
 refused with a clear message; exit status is preserved through the pipeline; a
 background job is startable and stoppable.
 
+> **Status (2026-11-09): implemented.** `miser/execution.py` holds the allowlist,
+> metacharacter rejection, `shell=False` spawning, per-invocation approval (with
+> "always" for an exact argv), real exit status, sanitised child environment, and
+> background jobs with a log file plus stop. `tests/test_execution.py` covers every
+> clause of the acceptance sentence above (8 tests; 208 total passing). The headless
+> `run` path has no approval channel and therefore refuses, by design. What is not
+> recorded: a model-driven task using the tool, since no live run has needed it yet.
+
 ### Phase 4 — Planning and progress
 
 Add `write_todos` (an ordered list the model rewrites as it advances) and require

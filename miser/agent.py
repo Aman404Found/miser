@@ -27,13 +27,17 @@ For external APIs, prefer repository evidence for the installed version. If unce
 patch, use verify_claim against official documentation. A retrieved snippet is not automatic proof.
 Only edit code when the task explicitly requires changes. Do not perform edits or run acceptance tests for greetings, questions, or non-coding requests.
 Run the configured acceptance tests after edits. Do not claim success without passing tests.
-There is no general shell tool. Do not circumvent tool limits through code you write.
+run_command runs ONE allowlisted program as a literal argv array, never through a shell.
+The host checks the allowlist and asks the user to approve each new command, so it may be refused or unavailable.
+Do not try to express pipes, redirects, or chained commands; do not circumvent tool limits through code you write.
+Use background=true only for long-running programs, then poll action=status with the returned job_id.
 Be concise. The host stops when tests pass after an edit, or when budgets/limits are reached.
 """
 
 
 SUMMARY_KEYS = ("path", "version", "edited", "unchanged", "passed", "exit_code", "timed_out",
-                "truncated", "error", "files")
+                "truncated", "error", "files", "command", "argv", "output", "output_truncated",
+                "job_id", "running", "elapsed_seconds")
 COMPACTION_RATIO = 0.75
 
 ARCHITECT = """You are the architect in a two-model coding workflow. Read the task and return a short,

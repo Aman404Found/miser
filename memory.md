@@ -4,7 +4,7 @@ Living log of what has been done, what is verified, and what is next.
 Update this file at the end of every work session. Newest entries at the top of
 "Session log"; keep "Current state" accurate rather than appending forever.
 
-Last updated: 2026-11-09 (session 3)
+Last updated: 2026-11-09 (session 4)
 
 ---
 
@@ -29,18 +29,22 @@ Last updated: 2026-11-09 (session 3)
 
 - Python 3.12.3, `requires-python >=3.11`, no runtime dependencies.
 - `miser/` ≈ 27 files / ~5.8k LOC.
-- **Tests: 200 passing** — `python3 -m unittest discover -s tests -q` (exit 0, ~9.7s).
-- **Tools: 14** — `repo_map`, `list_files`, `find_files`, `search`, `zoom`, `recall`,
+- **Tests: 208 passing** — `python3 -m unittest discover -s tests -q` (exit 0, ~12.8s).
+- **Tools: 15** — `repo_map`, `list_files`, `find_files`, `search`, `zoom`, `recall`,
   `read_many`, `write_file`, `edit`, `edit_batch`, `apply_patch`, `blast_radius`,
-  `run_tests`, `verify_claim`.
+  `run_tests`, `verify_claim`, `run_command`.
 - Roadmap phases 1–4 of `HANDOVER_PROMPT.md` were already implemented before this
-  session; `docs/agent-roadmap.md` Phases 1 and 2 are now implemented too.
+  session; `docs/agent-roadmap.md` Phases 1, 2 and 3 are now implemented.
+- Phase 3 supervised execution exists (`miser/execution.py`), but the headless
+  `python3 -m miser run` path has no approval channel, so `run_command` refuses there
+  by design. Interactive `miser` and the TUI prompt per invocation.
 
-### Environment blockers
+### Environment notes
 
-- **Git is broken**: `.git/` contains only `info/exclude` — no `HEAD`, no `objects`.
-  `git status` → `fatal: not a git repository`. Nothing is committed; no commit, diff,
-  or log is possible until the repo is re-initialised or restored.
+- **Git works again.** The repo was re-initialised on 2026-11-09 and the Phase 1–2
+  snapshot committed as `04f4b8b` (61 files; no reference repos, no secrets, no
+  `runs/`). `.gitignore` covers `opencode/`, `aider/`, `.agents/`, `.aws/`, `.codex/`,
+  `.freebuff/`, `runs/`, `.miser/`, caches, and `.env*` except `.env.example`.
 - **Gateway**: Bifrost is alive and authenticated. A real completion succeeded on
   2026-11-09 (`MISER_MODEL=gemini/gemini-3.5-flash`, served as `gemini-3.6-flash`,
   usage reported 7 prompt / 13 completion / 20 total tokens). A tool-enabled request
@@ -58,13 +62,67 @@ Last updated: 2026-11-09 (session 3)
 - **Real smoke run exists**: `runs/smoke-phase12-20261109` ended `tests_passed`
   (4 model calls, 6 tool calls, 8,663 in / 285 out / 8,948 total provider tokens,
   0 failed requests, 0 compactions). This is one task, not a benchmark.
-- **Git is broken** (see above); nothing from Phase 1/2 or later is committed.
 
 ---
 
 ## Session log
 
-### 2026-11-09 — truncation status, live gateway probe, first real smoke run
+### 2026-11-09 — Phase 3 supervised execution (approved by the user)
+
+Completed:
+
+1. **`miser/execution.py` (new, ~256 lines).** `run_command` with
+   `action = run | status | stop`, an `argv` array, `background`, and `job_id`.
+   - `DEFAULT_ALLOWLIST` uses prefix rules: `python3 -m unittest`, `python3 -m pytest`,
+     `python3 -m mypy`, `pytest`, `ruff`, `mypy`, `node --test`, `git status`,
+     `git diff`.
+   - `SHELL_METACHARACTERS = ";&|<>$`\n\r()"` — any occurrence in any argument is a
+     refusal, and the process is spawned with `shell=False` always. There is no code
+     path that reaches a shell.
+   - `sanitised_env` passes only `SAFE_ENV_KEYS` (PATH, HOME, LANG, LC_*, TERM, TMPDIR,
+     SYSTEMROOT, PYTHON*); credentials in `.env` never reach the child.
+   - Limits: `MAX_ARGV = 32`, `MAX_ARG_LENGTH = 500`, `OUTPUT_CAP = 8000`,
+     `MAX_JOBS = 8`.
+   - Approval: a callback returning `True` runs once, `"always"` adds the exact argv
+     tuple to a per-session set (so the next identical invocation is silent), `False`
+     refuses. **No callback ⇒ refuse**, which is why the headless run path refuses.
+   - Real exit status is carried through unchanged; `0` and non-zero are both returned
+     with stdout/stderr, not collapsed into an exception.
+   - Background jobs write to `{repo}/.miser/jobs/<job_id>.log`, registered in a
+     process-local `_JOBS`; `stop` sends `SIGKILL` to the process group then the
+     process. `status` falls back to a surviving log file for an unknown id.
+2. **`miser/tools.py`.** 15th schema `run_command`; `ToolRunner.__init__` gained
+   `command_approval`, `command_allowlist`, `command_timeout` (120s),
+   `max_command_runs` (10) and holds `self.commands = CommandSupervisor(...)`;
+   `invoke()` routes `run_command`.
+3. **`miser/agent.py`.** `SYSTEM` describes the tool's real limits (allowlist,
+   approval, no shell, may be refused when headless, `background=true` +
+   `action=status`). `SUMMARY_KEYS` extended with `command`, `argv`, `output`,
+   `output_truncated`, `job_id`, `running`, `elapsed_seconds` so results survive
+   compaction.
+4. **`miser/terminal.py`.** `prompt_command_approval(command)` → `True` / `False` /
+   `"always"`; `task()` passes it as `command_approval`.
+5. **`miser/tui/app.py`.** `_approval_is_command` flag, `request_command_approval`,
+   and a command branch in `_handle_approval_key` (`a` selects `"always"` without
+   clearing `confirm_edits`).
+6. **`tests/test_execution.py` (new, 8 tests).** Allowlisted run; non-zero exit
+   preserved; metacharacter refusal; unlisted binary refusal; approval refusal;
+   missing approval channel; `"always"` suppresses the repeat prompt; background
+   start → status → stop.
+
+Verification actually run:
+
+- `python3 -m unittest tests.test_execution -v` → **8 tests, OK** (0.749s).
+- `python3 -m unittest discover -s tests -q` → **208 tests, OK**, exit 0, 12.816s.
+
+Not verified / not done:
+
+- No live model run used `run_command`; the Phase 3 acceptance is proven by unit
+  tests against real `python3 -m unittest` invocations, not by a model-driven task.
+- `ruff`/`mypy` allowlist entries are unverified as installed on this machine.
+- App-level guards are not an OS sandbox.
+
+---### 2026-11-09 — truncation status, live gateway probe, first real smoke run
 
 Completed:
 
@@ -161,17 +219,25 @@ Not verified / not done:
 
 ## Next steps
 
-1. Decide on git: re-initialise the repo (`git init` + `.gitignore` review) or restore
-   it from a copy. Needed before any commit or diff exists.
+1. ~~Decide on git~~ — done: re-initialised, `.gitignore` in place, `04f4b8b` committed.
 2. ~~Confirm the gateway works end-to-end~~ — done: smoke run passed, but the
    Phase 1/2 *baseline* numbers remain unavailable.
-3. Phase 3 — supervised execution (allowlist, approval, real exit status, background +
-   stop, no shell, reject metacharacters). **Needs explicit user approval** because it
-   touches the no-arbitrary-shell rule.
+3. ~~Phase 3 — supervised execution~~ — **done and tested** (8 new tests, 208 total).
+   The arbitrary-shell rule is now enforced in code: allowlist prefixes, metacharacter
+   rejection, `shell=False`, per-invocation approval, real exit status,
+   background + stop. Headless runs refuse because there is no approval channel.
 4. Phase 4 — `write_todos` re-emitted each step.
 5. Phase 5 — `web_search` / `fetch_url` with the untrusted-content contract.
 6. Phase 6 — concurrent read-only tools; summarising compaction.
 7. Phase 7 — evaluation harness producing a dated `docs/benchmark-results.md` table.
+
+## What the user may need to do
+
+- Nothing is blocked on the user for Phase 3. If a future task should run
+  `ruff`/`mypy`, those binaries must actually be installed; the allowlist permits them
+  but does not install them.
+- Live model work should keep using `gemini/gemini-3.5-flash-lite`; the plain
+  `gemini-3.5-flash` route is 429 for tool-bearing requests.
 
 ---
 

@@ -47,6 +47,7 @@ class TuiApp:
         self._approval_event = None
         self._approval_result = False
         self._approval_diff = ""
+        self._approval_is_command = False
         self._last_size = None
         self.glyphs = theme.symbols()
         self._load_history()
@@ -56,6 +57,7 @@ class TuiApp:
         terminal.cancel_event = threading.Event()
         terminal.activity_listener = self.on_activity
         terminal.prompt_edit_approval = self.request_approval
+        terminal.prompt_command_approval = self.request_command_approval
         for text in initial or []:
             self.append_output(text)
 
@@ -195,11 +197,29 @@ class TuiApp:
         self._approval_event = threading.Event()
         self._approval_result = False
         self._approval_diff = diff
+        self._approval_is_command = False
         self.approval = f"apply edit to {path}?   [y]es  [n]o  [a]ll  [d]iff"
         self.status = "awaiting approval"
         self.dirty = True
         self._approval_event.wait()
         self.approval = None
+        self.dirty = True
+        return self._approval_result
+
+    def request_command_approval(self, command):
+        width = self._max_width()
+        self.append_output("")
+        self.append_output(render.notice(f"the agent asks to run: {command}", width, self.glyphs))
+        self._approval_event = threading.Event()
+        self._approval_result = False
+        self._approval_diff = ""
+        self._approval_is_command = True
+        self.approval = "run this command?   [y]es  [n]o  [a]lways"
+        self.status = "awaiting command approval"
+        self.dirty = True
+        self._approval_event.wait()
+        self.approval = None
+        self._approval_is_command = False
         self.dirty = True
         return self._approval_result
 
@@ -209,6 +229,23 @@ class TuiApp:
             self._approval_event.set()
 
     def _handle_approval_key(self, key):
+        if self._approval_is_command:
+            width = self._max_width()
+            if key.name == "ctrl+c":
+                self.terminal.cancel_event.set()
+                self.append_output(render.notice("command rejected", width, self.glyphs))
+                self._resolve_approval(False)
+            elif (key.name == "char" and key.text.lower() == "y") or key.name == "enter":
+                self.append_output(render.notice("command approved", width, self.glyphs))
+                self._resolve_approval(True)
+            elif key.name == "char" and key.text.lower() == "a":
+                self.append_output(render.notice("exact command approved for this session",
+                                                 width, self.glyphs))
+                self._resolve_approval("always")
+            elif (key.name == "char" and key.text.lower() == "n") or key.name == "escape":
+                self.append_output(render.notice("command rejected", width, self.glyphs))
+                self._resolve_approval(False)
+            return
         if key.name == "ctrl+c":
             self.terminal.cancel_event.set()
             self.append_output(render.notice("edit rejected", self._max_width(), self.glyphs))

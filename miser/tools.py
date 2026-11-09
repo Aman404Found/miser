@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import time
 
+from .execution import CommandSupervisor
 from .ledger import estimate_tokens
 from .verification import EvidenceSearch
 from .workspace import diff_previews
@@ -53,6 +54,13 @@ SCHEMAS = [
     function("blast_radius", "Literal possible references; not resolved callers.",
              {"symbol": STRING}, ["symbol"]),
     function("run_tests", "Run fixed acceptance command."),
+    function("run_command",
+             "Run ONE allowlisted command without a shell; requires user approval. "
+             "Use action=status or stop with a job_id for background commands.",
+             {"action": {"type": "string", "enum": ["run", "status", "stop"]},
+              "argv": {"type": "array", "minItems": 1, "maxItems": 32, "items": STRING},
+              "background": {"type": "boolean"}, "job_id": STRING},
+             ["action"]),
     function("verify_claim", "Search official docs for versioned claim. Untrusted, unverified evidence candidates.",
              {"claim": STRING, "version": STRING, "domains": {"type": "array", "items": STRING}},
              ["claim", "version", "domains"]),
@@ -61,7 +69,8 @@ SCHEMAS = [
 
 class ToolRunner:
     def __init__(self, workspace, ledger, test_command, test_timeout=60, max_test_runs=5,
-                 approval_callback=None):
+                 approval_callback=None, command_approval=None, command_allowlist=None,
+                 command_timeout=120, max_command_runs=10):
         if not test_command or test_timeout < 1:
             raise ValueError("A nonempty acceptance command and positive timeout are required")
         self.workspace = workspace
@@ -70,6 +79,10 @@ class ToolRunner:
         self.test_timeout = test_timeout
         self.max_test_runs = max_test_runs
         self.approval_callback = approval_callback
+        self.commands = CommandSupervisor(
+            workspace, ledger, approval_callback=command_approval,
+            allowlist=command_allowlist, timeout=command_timeout,
+            max_runs=max_command_runs)
         self.test_runs = 0
         self.evidence = EvidenceSearch(ledger)
         self.last_tests = None
@@ -191,6 +204,8 @@ class ToolRunner:
                 if arguments:
                     raise ValueError("run_tests accepts no arguments")
                 result = self.run_tests()
+            elif name == "run_command":
+                result = self.commands.invoke(arguments)
             elif name == "verify_claim":
                 result = self.evidence.verify_claim(**arguments)
             elif name in {"repo_map", "list_files", "find_files", "search", "zoom", "recall",

@@ -309,6 +309,29 @@ class Terminal:
             self.say(render.notice("Edit rejected; nothing was written.", width, self.glyphs))
             return False
 
+    def prompt_command_approval(self, command: str):
+        """Approve one allowlisted command. Returns True, False, or "always"."""
+        self.spinner.stop()
+        width = self.width()
+        self.say("")
+        self.say(render.notice(f"The agent asks to run: {command}", width, self.glyphs))
+        self.say(theme.dim("  It runs as a literal argv array in the repository, without a shell."))
+        while True:
+            try:
+                choice = self.read(f"{theme.cyan(self.glyphs.prompt)} run this command? "
+                                   "[y]es / [n]o / [a]lways " ).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                self.say(render.notice("Command rejected.", width, self.glyphs))
+                return False
+            if choice in ("y", "yes", ""):
+                return True
+            if choice in ("a", "always"):
+                self.say(render.notice("This exact command is approved for the rest of the session.",
+                                       width, self.glyphs))
+                return "always"
+            self.say(render.notice("Command rejected; nothing was run.", width, self.glyphs))
+            return False
+
     def undo(self):
         if not self.workspace.modified:
             self.say(render.notice("No modified files to revert in this session.", self.width(), self.glyphs))
@@ -790,7 +813,8 @@ class Terminal:
         self.current_task = text
         approval = self.prompt_edit_approval if self.confirm_edits else None
         task_workspace = Workspace(self.repo)
-        runner = ToolRunner(task_workspace, ledger, self.command, approval_callback=approval)
+        runner = ToolRunner(task_workspace, ledger, self.command, approval_callback=approval,
+                            command_approval=self.prompt_command_approval)
         started = time.monotonic()
         width = self.width()
         state = {"stream": None, "parts": []}
