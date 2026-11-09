@@ -8,7 +8,7 @@ You are taking over **MISER**, a high-performance, lightweight Python coding age
 
 - **Project Root**: `/home/aman-kumar-sharma/Desktop/fresh-code`
 - **Language / Runtime**: Python 3.12 (target: Python 3.11+ compatibility, standard-library-first).
-- **Test Suite Status**: **222 tests passing** (`python3 -m unittest discover -s tests -q`).
+- **Test Suite Status**: **240 tests passing** (`python3 -m unittest discover -s tests -q`).
 - **CLI Entry Point**: `python3 -m miser` (or `pyproject.toml` console script).
 - **Inference Gateway**: Local Bifrost proxy at `http://localhost:8080/openai`.
   - Bifrost provides an OpenAI-compatible REST API (`/openai/chat/completions`) for multi-provider routing (Google Gemini, Anthropic Claude, OpenAI, etc.).
@@ -52,9 +52,10 @@ All foundational and interface improvements have been implemented and verified:
 
 ## 3. Master Execution Plan: Phase-by-Phase Roadmap
 
-> **Status (2026-11-09):** Phases 1–4 are implemented and covered by tests (222 passing via
-> `python3 -m unittest discover -s tests -q`). Phase 5's command and grading exist, but its
-> live golden run is blocked because Bifrost was not listening on `localhost:8080`; see
+> **Status (2026-11-09):** Phases 1–5 are implemented and covered by tests (240 passing via
+> `python3 -m unittest discover -s tests -q`). Phase 5 added `web_search` and `fetch_url`
+> with the untrusted-content contract; Bifrost is listening again, so its golden run is no
+> longer blocked, though no live model-driven web task has been recorded yet. See
 > [`docs/implementation-status.md`](docs/implementation-status.md) and
 > [`docs/benchmark-results.md`](docs/benchmark-results.md) for what is measured versus pending.
 

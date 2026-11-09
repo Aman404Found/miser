@@ -4,7 +4,7 @@ Living log of what has been done, what is verified, and what is next.
 Update this file at the end of every work session. Newest entries at the top of
 "Session log"; keep "Current state" accurate rather than appending forever.
 
-Last updated: 2026-11-09 (session 5)
+Last updated: 2026-11-09 (session 6)
 
 ---
 
@@ -29,11 +29,13 @@ Last updated: 2026-11-09 (session 5)
 
 - Python 3.12.3, `requires-python >=3.11`, no runtime dependencies.
 - `miser/` ≈ 27 files / ~5.8k LOC.
-- **Tests: 222 passing** — `python3 -m unittest discover -s tests -q` (exit 0, ~7.2s).
-- **Tools: 16** — `repo_map`, `list_files`, `find_files`, `search`, `zoom`, `recall`,
+- **Tests: 240 passing** — `python3 -m unittest discover -s tests -q` (exit 0, ~7.1s).
+- **Tools: 18** — `repo_map`, `list_files`, `find_files`, `search`, `zoom`, `recall`,
   `read_many`, `write_file`, `edit`, `edit_batch`, `apply_patch`, `blast_radius`,
-  `run_tests`, `verify_claim`, `run_command`, `write_todos`.
-- `docs/agent-roadmap.md` Phases 1, 2, 3 and 4 are implemented and covered by tests.
+  `run_tests`, `verify_claim`, `run_command`, `write_todos`, `web_search`, `fetch_url`.
+- `docs/agent-roadmap.md` Phases 1, 2, 3, 4 and 5 are implemented and covered by tests.
+  Phase 5's *live* half (real Tavily search + real page fetch inside a model-driven
+  task) is not recorded yet.
 - Phase 3 supervised execution exists (`miser/execution.py`), but the headless
   `python3 -m miser run` path has no approval channel, so `run_command` refuses there
   by design. Interactive `miser` and the TUI prompt per invocation.
@@ -65,6 +67,41 @@ Last updated: 2026-11-09 (session 5)
 ---
 
 ## Session log
+
+### 2026-11-09 — Bifrost login, Phase 5 (web search and fetch)
+
+- **Bifrost "No setup token is configured" is a stale tab, not a live fault.** The
+  dashboard config lives at `~/.config/bifrost/config.json`; giving it a literal
+  `setup_token` string is the portable fix, because the `npx @maximhq/bifrost`
+  wrapper (`bin.js` v1.6.3) forwards only app-dir/host/log-level/log-style/port and
+  would drop a `--setup-token` flag. The same token is in
+  `~/.config/bifrost/setup-token.txt`; both files are mode 600 and the token must
+  never be printed. After a detached restart:
+  `setsid nohup npx --yes @maximhq/bifrost > /tmp/bifrost-restart.log 2>&1 < /dev/null &`
+  the session endpoint reports `"setup_token_configured": true` and
+  `"setup_required": true` with `auth_type: none`. `/api/config` answers 200 with an
+  `X-Bifrost-Setup-Token` header and v2.5.0 is serving. Inference was re-confirmed
+  (`/v1/models` 200, chat completion 200). There is no discovered API route to create
+  the admin account (`/api/auth/setup`, `/api/session/setup`, `/api/session/login`,
+  `/api/auth/login` are all 404), so dashboard login needs a human in a browser;
+  inference does not need it. Fix for the user: hard-reload `http://localhost:8080/login`
+  (Ctrl+Shift+R) and paste the token from `cat ~/.config/bifrost/setup-token.txt`.
+- **Phase 5 implemented**: `miser/web.py` (`WebAccess`, `check_url`, `_open_once`,
+  `_NoRedirect`, `_TextExtractor`, `html_to_text`), wired into `tools.py` (18 schemas,
+  dispatch, per-run budget 8 shared by both tools), `agent.py` (system-prompt rule,
+  summary keys, ledger detail), `ui/render.py` (`web` / `fetch` labels) and
+  `ledger.py` (`web_calls`). Contract: fetched text is untrusted data in a `tool`
+  message, never system-prompt text; https only except loopback test doubles;
+  userinfo refused; private/loopback/reserved hosts refused unless
+  `MISER_WEB_ALLOW_PRIVATE=1`; redirects off by default with each hop re-validated
+  (max 3); 500,000-byte body cap, 8,000-char returned text cap; non-text refused.
+  Hostnames are checked literally — this is a policy guard, not a DNS sandbox.
+- **Tests**: `tests/test_web.py`, 18 cases. First run had one failure because the
+  test expected `http://localhost` to pass the default guard; fixed the test to
+  assert the loopback guard still applies and to opt in with `allow_private=True`.
+  Full suite: **240 tests OK**. Fetch tests patch `miser.web._open_once` and
+  `miser.web.post_json` because this host cannot bind sockets — labelled simulated;
+  no real Tavily or live fetch call was made.
 
 ### 2026-11-09 — Phase 4 planning and progress
 

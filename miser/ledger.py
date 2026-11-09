@@ -92,6 +92,7 @@ def receipt(data):
         "tool_calls": sum(e["kind"] == "tool" for e in events),
         "test_runs": sum(e["kind"] == "tests" for e in events),
         "search_attempts": sum(e["kind"] == "search" for e in events),
+        "web_calls": sum(e["kind"] == "web" for e in events),
         "compactions": sum(e["kind"] == "compaction" for e in events),
         "model_fallbacks": sum(e["kind"] == "model_fallback" for e in events),
         "architect_plans": sum(e["kind"] == "architect_plan" for e in events),

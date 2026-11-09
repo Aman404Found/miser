@@ -92,7 +92,7 @@ MISER currently exposes 11 tools: `repo_map`, `list_files`, `search`, `zoom`,
 | Directory listing | `list_directory` | `list_files` | No cheap structural probe |
 | Command execution | `run_terminal_command` (SYNC/BACKGROUND, exit status, logs) | `run_tests` (fixed acceptance command only) | No lint, no typecheck, no repro scripts |
 | Task tracking | `write_todos` | none | Long tasks lose the plan |
-| Web search / fetch | `web_search`, `read_url` | `verify_claim` only | No documentation lookup |
+| Web search / fetch | `web_search`, `read_url` | `web_search`, `fetch_url` (Phase 5) | Live Tavily/fetch run still unrecorded |
 | Doc lookup | `context7` | none | API details must come from memory |
 | Memory / knowledge base | `meko` tools | none | No cross-session learning |
 | Browser automation | `playwright`, `chrome-devtools` | none | No UI verification |
@@ -192,6 +192,17 @@ versions.
 **Acceptance:** a task requiring an external API detail cites the fetched URL, and
 injected instructions in a fetched page do not change tool selection (tested with
 a fixture page).
+
+> **Status (2026-11-09): implemented, live acceptance pending.** `miser/web.py`
+> holds `WebAccess` (`search`, `fetch`), URL policy in `check_url`, redirect
+> re-validation, byte/char caps and an `HTMLParser`-based extractor. `web_search`
+> and `fetch_url` are the 17th and 18th tools. Fetched text is always returned in a
+> `tool` message with an untrusted label, never in the system prompt, and the system
+> prompt says page content is data rather than instructions. `tests/test_web.py`
+> covers the guard, redirects, truncation, labelling, shared budget and tool wiring
+> (18 tests; 240 total passing). The guard is application-level: hostnames are not
+> resolved, so it is not a DNS-rebinding-proof sandbox. What is not recorded: a live
+> model-driven task with a real Tavily search and a real page fetch.
 
 ### Phase 6 — Parallelism and context
 

@@ -21,7 +21,7 @@ TOOL_LABELS = {
     "repo_map": "index", "list_files": "list", "search": "search", "zoom": "read",
     "recall": "recheck", "edit": "edit", "edit_batch": "edit", "apply_patch": "patch",
     "blast_radius": "refs", "run_tests": "test", "verify_claim": "verify",
-    "write_todos": "plan",
+    "write_todos": "plan", "web_search": "web", "fetch_url": "fetch",
 }
 
 STATUS_LABELS = {
@@ -308,6 +308,10 @@ def tool_detail(name, args):
         todos = args.get("todos") or []
         done = sum(1 for item in todos if isinstance(item, dict) and item.get("completed"))
         return f"{done}/{len(todos)} done" if todos else ""
+    if name == "web_search":
+        return f'"{args.get("query", "")[:60]}"'
+    if name == "fetch_url":
+        return str(args.get("url") or "")[:80]
     return ""
 
 

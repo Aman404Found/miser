@@ -1,5 +1,32 @@
 # Implementation status
 
+## Knowledge and web update (Phase 5)
+
+- Two new tools, `web_search` (Tavily) and `fetch_url`, live in `miser/web.py`
+  (`WebAccess`). They make MISER 18 tools.
+- Fetched text is always labelled untrusted and returned as a `tool` message; it is
+  never placed in the system prompt. The system prompt states that page content is
+  data, and that instructions found inside it must not change tool selection.
+- `check_url` requires `https`, except plain `http` for a loopback test double.
+  URLs with embedded credentials are refused, as are non-http(s) schemes.
+  Loopback, private, link-local, multicast and reserved hosts are refused unless
+  `MISER_WEB_ALLOW_PRIVATE=1` is set for deliberate local testing. Hostnames are
+  checked literally, so this is a policy guard, not a DNS-rebinding-proof sandbox.
+- Redirects are disabled at the transport layer and each hop is re-validated before
+  it is followed (at most 3 hops). Bodies are capped at 500,000 bytes and the text
+  handed to the model at 8,000 characters; non-text content types are refused.
+  HTML is reduced to readable text by a stdlib `HTMLParser` that skips
+  `script`/`style`.
+- Search and fetch share a per-run budget of 8 calls and record `web` ledger events;
+  the receipt exposes `web_calls`.
+- Local verification: 240 tests passed, including 18 new cases in
+  `tests/test_web.py` (URL policy, redirect re-validation, truncation, untrusted
+  labelling, budget, and tool wiring). No live Tavily or live http fetch was made
+  for this update: the host cannot bind sockets, so the fetch tests substitute the
+  transport and are labelled simulated. The acceptance sentence's live half — a
+  model-driven task citing a fetched URL while ignoring injected instructions — is
+  still pending.
+
 ## Planning and progress update (Phase 4)
 
 - New 16th tool `write_todos`, backed by `miser/todos.py` (`TodoList`). The model
