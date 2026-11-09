@@ -3,6 +3,7 @@
 import json
 import math
 import os
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -43,18 +44,24 @@ class Ledger:
         self.path = Path(path)
         self.data = {"schema_version": 1, "started_at": now(), "metadata": metadata,
                      "status": "running", "events": []}
+        # Concurrent read-only tool calls record at the same time; write_json
+        # reuses one .tmp path, so serialise the write itself.
+        self._lock = threading.RLock()
         self.flush()
 
     def record(self, kind, **fields):
-        self.data["events"].append({"at": now(), "kind": kind, **fields})
-        self.flush()
+        with self._lock:
+            self.data["events"].append({"at": now(), "kind": kind, **fields})
+            self.flush()
 
     def flush(self):
-        write_json(self.path, self.data)
+        with self._lock:
+            write_json(self.path, self.data)
 
     def finish(self, status, **fields):
-        self.data.update(status=status, finished_at=now(), **fields)
-        self.flush()
+        with self._lock:
+            self.data.update(status=status, finished_at=now(), **fields)
+            self.flush()
 
     @property
     def total_tokens(self):

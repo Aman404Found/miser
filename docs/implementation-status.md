@@ -1,5 +1,56 @@
 # Implementation status
 
+## Parallel read-only tools and tighter compaction (Phase 6)
+
+- Independent read-only calls in one assistant turn now run on a small thread pool
+  (`miser/agent.py: run_parallel_batch`, at most 8 workers). A turn is batched only
+  when every call parsed, at least two calls were made, and every tool is in
+  `READ_ONLY_TOOLS` (`repo_map`, `list_files`, `find_files`, `search`, `zoom`,
+  `recall`, `read_many`, `blast_radius`, `web_search`, `fetch_url`). Anything else —
+  edits, `run_tests`, `run_command`, `verify_claim`, `write_todos`, malformed
+  arguments — keeps the sequential path, so no write ever races another write.
+- Ordering is preserved: starts are emitted on the calling thread in model order,
+  results arrive through `as_completed` (activity only), and tool messages, memory
+  observations and the early-exit test check are emitted zipped back into model call
+  order. A `tool_batch` ledger event records the tools and whether the batch ran in
+  parallel; `receipt()` sums only known event kinds, so it is unaffected.
+- Shared state is now lock-guarded: `Ledger` uses an `RLock` around `record`/`flush`/
+  `finish`, and `WebAccess._reserve` is atomic under a `Lock`, so a parallel batch
+  cannot double-spend the web budget or interleave ledger writes.
+- Compaction is structured rather than a blind truncation. Each older tool result is
+  replaced by a bounded digest (`compact_digest`, 600 chars) that keeps scalars,
+  paths, versions, error text and pass/fail flags while trimming long text to 200
+  characters. It is a local digest: no extra model call is spent summarizing.
+- The last six assistant decisions (300 chars each) are kept in a `deque` and
+  re-injected as `state["earlier_decisions"]`, but only after a real compaction has
+  happened, so short sessions pay nothing for it.
+- The compaction threshold is adaptive: normally `token_budget * COMPACTION_RATIO`,
+  but lowered to `token_budget * min(COMPACTION_RATIO, 0.55)` once a single tool
+  output exceeded 12% of the budget. Compaction still only fires when the estimate
+  actually exceeds the threshold and always reports the tokens it freed.
+- Local verification: 249 tests pass (`python3 -m unittest discover -s tests -q`),
+  including 7 new cases in `tests/test_agent.py` and a 12-thread budget race in
+  `tests/test_web.py`. Coverage includes a parallel batch, a mixed batch falling back
+  to sequential, ordered results, both threshold branches, digest bounding and
+  unparseable output, and decision re-injection after compaction.
+- Wall clock, measured on this host with real tool calls over 8 source files
+  (`/tmp/miser_batch_bench.py`, medians of 7 runs):
+
+  | calls | sequential | parallel |
+  | --- | --- | --- |
+  | 1 | 0.5 ms | 0.4 ms |
+  | 2 | 0.9 ms | 1.5 ms |
+  | 4 | 2.3 ms | 3.6 ms |
+  | 8 | 6.6 ms | 10.3 ms |
+
+  Local file reads are already sub-millisecond, so thread setup costs more than it
+  saves and parallel batching is *slower* there (≈0.6×). Its value is network-bound
+  tools: with a **simulated** 150 ms per call (no real network used), 4 calls took
+  601 ms sequentially vs 151 ms in parallel, ≈4.0×. So the acceptance sentence "wall
+  clock drops measurably" holds only for `web_search`/`fetch_url`; for local reads it
+  is a few milliseconds of regression inside a multi-second model turn. Outputs were
+  asserted byte-identical to the sequential path for all 8 files.
+
 ## Final-answer status update
 
 - A text reply that ends the turn with no tool call now finishes as `answered`

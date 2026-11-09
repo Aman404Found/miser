@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
 import urllib.error
 from pathlib import Path
@@ -220,6 +221,30 @@ class ToolWiringTests(WebTestBase):
         result = json.loads(runner.invoke("fetch_url", {"url": "http://example.org/"}))
         self.assertIn("error", result)
         self.assertNotIn("text", result)
+
+
+class BudgetConcurrencyTests(WebTestBase):
+    def test_reserve_grants_exactly_the_remaining_budget(self):
+        web = self.web(max_calls=5)
+        granted, refused = [], []
+        barrier = threading.Barrier(12)
+
+        def reserve():
+            barrier.wait()
+            try:
+                web._reserve()
+                granted.append(True)
+            except ValueError:
+                refused.append(True)
+
+        threads = [threading.Thread(target=reserve) for _ in range(12)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+        self.assertEqual(len(granted), 5)
+        self.assertEqual(len(refused), 7)
+        self.assertEqual(web.calls, 5)
 
 
 if __name__ == "__main__":

@@ -3,12 +3,13 @@
 import json
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .client import RETRYABLE_STATUS, RemoteHTTPError, StreamInterrupted
 from .formatting import human_tool_progress
 from .intent import classify_intent
 from .ledger import estimate_tokens, request_diagnostics
-from .tools import SCHEMAS
+from .tools import READ_ONLY_TOOLS, SCHEMAS
 from .memory import WorkingMemory
 
 
@@ -47,6 +48,13 @@ SUMMARY_KEYS = ("path", "version", "edited", "unchanged", "passed", "exit_code",
                 "completed", "next_step", "url", "query", "results", "title", "untrusted",
                 "content_type", "text", "note")
 COMPACTION_RATIO = 0.75
+# A large single tool result arrives one step late for the prompt that caused it,
+# so compact below the usual mark once any result has eaten this share of budget.
+LARGE_OUTPUT_SHARE = 0.12
+LARGE_OUTPUT_RATIO = 0.55
+MAX_PARALLEL_TOOLS = 8
+DIGEST_LIMIT = 600
+DECISION_LIMIT = 300
 
 ARCHITECT = """You are the architect in a two-model coding workflow. Read the task and return a short,
 numbered implementation plan: which files to inspect, the exact change to make, and how the fixed
@@ -64,6 +72,44 @@ def record_fallback(client, ledger, activity=None):
             ledger.record("model_fallback", **event)
             if activity:
                 activity({"type": "fallback", **event})
+
+
+def compaction_threshold(token_budget, largest_output=0):
+    """Prompt size that triggers compaction; lower it after one oversized result."""
+    if token_budget > 0 and largest_output > token_budget * LARGE_OUTPUT_SHARE:
+        return token_budget * min(COMPACTION_RATIO, LARGE_OUTPUT_RATIO)
+    return token_budget * COMPACTION_RATIO
+
+
+def _timed_invoke(runner, name, args):
+    """Worker body: a tool call plus its local elapsed time. No callbacks here."""
+    started = time.monotonic()
+    try:
+        output = runner.invoke(name, args)
+    except Exception as error:  # invoke normally reports failures as JSON
+        output = json.dumps({"error": f"{type(error).__name__}: {error}"[:300]})
+    return output, round(time.monotonic() - started, 3)
+
+
+def run_parallel_batch(runner, planned, on_result=None):
+    """Run independent read-only calls together; return (output, elapsed) in call order.
+
+    Workers only invoke tools. ``on_result`` runs on the calling thread from
+    ``as_completed``, so progress/activity stay ordered and never race.
+    """
+    if len(planned) < 2:
+        return [_timed_invoke(runner, name, args) for name, args in planned]
+    results = [None] * len(planned)
+    with ThreadPoolExecutor(max_workers=min(len(planned), MAX_PARALLEL_TOOLS)) as pool:
+        futures = {pool.submit(_timed_invoke, runner, name, args): index
+                   for index, (name, args) in enumerate(planned)}
+        for future in as_completed(futures):
+            index = futures[future]
+            results[index] = future.result()
+            if on_result is not None:
+                name, args = planned[index]
+                on_result(index, name, args, results[index])
+    return results
 
 
 def tool_event(name, output, elapsed):
@@ -131,22 +177,61 @@ def plan_task(task, client, ledger, token_budget, max_tokens=600):
     return (message.get("content") or "").strip()[:2000] or None
 
 
+def _clip(value, limit=200):
+    return value[:limit] if isinstance(value, str) else value
+
+
+def _scalar_digest(value):
+    """Keep scalar facts; count or shorten bulky values so the digest stays small."""
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return _clip(value, 200)
+    if isinstance(value, list):
+        kept = [_clip(item if isinstance(item, str) else str(item), 160) for item in value[:6]]
+        if len(value) > len(kept):
+            kept.append(f"… {len(value) - len(kept)} more")
+        return kept
+    if isinstance(value, dict):
+        return {"keys": sorted(str(key) for key in value)[:10]}
+    return _clip(str(value), 160)
+
+
+def _bounded_json(payload, limit):
+    """Encoded JSON no longer than ``limit`` characters; still parses."""
+    text = json.dumps(payload)
+    if len(text) <= limit:
+        return text
+    items = list(payload.items())
+    for count in range(len(items) - 1, 0, -1):
+        text = json.dumps(dict(items[:count]))
+        if len(text) <= limit:
+            return text
+    return json.dumps({"summary": "digest omitted"})
+
+
+def compact_digest(output, tool=None, limit=DIGEST_LIMIT):
+    """A small, valid-JSON digest of one tool result for a compacted turn."""
+    try:
+        value = json.loads(output or "")
+    except (ValueError, TypeError):
+        value = None
+    facts = {}
+    if isinstance(value, dict):
+        for key in SUMMARY_KEYS:
+            if key in value:
+                facts[key] = _scalar_digest(value[key])
+    if not facts:
+        return _bounded_json({"tool": tool, "digest": "tool result dropped after compaction"},
+                             limit)
+    return _bounded_json(facts, limit)
+
+
 def compact_turn(turn, content_limit=280):
     """Replace raw tool payloads and bulky arguments in a past turn with compact digests."""
     compacted = []
     for message in turn:
         if message.get("role") == "tool":
-            try:
-                value = json.loads(message.get("content") or "")
-            except (ValueError, TypeError):
-                value = None
-            if isinstance(value, dict):
-                summary = {key: value[key] for key in SUMMARY_KEYS if key in value}
-            else:
-                summary = None
-            if not summary:
-                summary = {"summary": "tool result dropped after compaction"}
-            compacted.append({**message, "content": json.dumps(summary)[:content_limit]})
+            compacted.append({**message,
+                              "content": compact_digest(message.get("content"), limit=DIGEST_LIMIT)})
         elif message.get("role") == "assistant":
             calls = []
             for call in message.get("tool_calls") or []:
@@ -163,7 +248,7 @@ def compact_turn(turn, content_limit=280):
 
 
 def build_messages(task, step, token_budget, runner, ledger, memory, history, initial_tests,
-                   plan=None, plan_reminder=None):
+                   plan=None, plan_reminder=None, decisions=None):
     """Prompt for one step: bounded state plus the retained conversation turns."""
     latest_tests = None
     if runner.last_tests:
@@ -183,6 +268,9 @@ def build_messages(task, step, token_budget, runner, ledger, memory, history, in
              "working_memory": breadcrumb}
     if plan:
         state["architect_plan"] = plan
+    if decisions:
+        # Injected only after compaction removed the turns that stated them.
+        state["earlier_decisions"] = list(decisions)
     if runner.todos.total:
         state["todos"] = runner.todos.state()
         if plan_reminder:
@@ -219,6 +307,9 @@ def run_agent(task, client, runner, ledger, token_budget=24000, max_steps=16,
         ledger.finish("rejected_non_coding", reason=f"Task classified as {intent.kind}: {intent.reason}")
         return "rejected_non_coding"
     history = deque(maxlen=history_turns)
+    decisions = deque(maxlen=6)
+    compacted = False
+    largest_output = 0
     memory = WorkingMemory()
     try:
         plan = None
@@ -248,11 +339,12 @@ def run_agent(task, client, runner, ledger, token_budget=24000, max_steps=16,
         for step in range(max_steps):
             checkpoint()
             messages = build_messages(task, step + 1, token_budget, runner, ledger, memory,
-                                      history, initial_tests, plan, plan_reminder)
+                                      history, initial_tests, plan, plan_reminder,
+                                      decisions if compacted else None)
             estimated_input = estimate_tokens(json.dumps(messages) + json.dumps(SCHEMAS))
             # Compaction keeps the prompt bounded instead of letting old tool JSON accumulate.
             attempts = 0
-            while estimated_input > token_budget * COMPACTION_RATIO \
+            while estimated_input > compaction_threshold(token_budget, largest_output) \
                     and (history or memory.observations) and attempts < 2:
                 before = estimated_input
                 kept = [compact_turn(turn) for turn in list(history)[-1:]] if history else []
@@ -261,7 +353,8 @@ def run_agent(task, client, runner, ledger, token_budget=24000, max_steps=16,
                 history.extend(kept)
                 memory.compact()
                 messages = build_messages(task, step + 1, token_budget, runner, ledger, memory,
-                                          history, initial_tests, plan, plan_reminder)
+                                          history, initial_tests, plan, plan_reminder,
+                                          decisions if compacted else None)
                 estimated_input = estimate_tokens(json.dumps(messages) + json.dumps(SCHEMAS))
                 if estimated_input >= before:
                     # Nothing was actually freed; recording a zero-gain compaction
@@ -271,6 +364,7 @@ def run_agent(task, client, runner, ledger, token_budget=24000, max_steps=16,
                               prompt_tokens_before=before, prompt_tokens_after=estimated_input,
                               tokens_freed=max(0, before - estimated_input),
                               note="Local digest of older turns; provider billing is unchanged")
+                compacted = True
                 if activity:
                     activity({"type": "compaction", "dropped_turns": dropped_turns,
                               "before": before, "after": estimated_input})
@@ -339,6 +433,8 @@ def run_agent(task, client, runner, ledger, token_budget=24000, max_steps=16,
             checkpoint()
             message = response["choices"][0]["message"]
             calls = message.get("tool_calls") or []
+            if message.get("content"):
+                decisions.append(str(message["content"]).strip()[:DECISION_LIMIT])
             if not calls:
                 # A reply cut off at the output cap is not a considered final
                 # answer: say so instead of reporting a plain "no more tool calls".
@@ -364,32 +460,70 @@ def run_agent(task, client, runner, ledger, token_budget=24000, max_steps=16,
                 raise ValueError("Too many tool calls in one response")
             turn = [{"role": "assistant", "content": message.get("content"), "tool_calls": calls}]
             emitted_plan = False
+            # Parse every call before running anything. One malformed call must
+            # not stop the calls the model can still explain, and a batch is only
+            # safe to run concurrently when every call is a known read-only tool.
+            prepared = []
             for call in calls:
-                checkpoint()
                 name = call["function"]["name"]
                 try:
                     args = json.loads(call["function"]["arguments"])
                     if not isinstance(args, dict):
                         raise ValueError("Tool arguments must be an object")
                 except (ValueError, TypeError):
-                    args = {}
-                    output = json.dumps({"error": "Malformed tool arguments"})
-                    ledger.record("tool", name=name, success=False, error="Malformed arguments")
-                    if progress:
-                        progress(f"  · {name} (malformed arguments)")
+                    prepared.append((call, name, None))
                 else:
+                    if name == "write_todos":
+                        emitted_plan = True
+                    prepared.append((call, name, args))
+            parallel = (len(prepared) >= 2
+                        and all(args is not None for _, _, args in prepared)
+                        and all(name in READ_ONLY_TOOLS for _, name, _ in prepared))
+            if len(prepared) > 1:
+                ledger.record("tool_batch", step=step + 1, count=len(prepared),
+                              tools=[name for _, name, _ in prepared], parallel=parallel)
+            checkpoint()
+            if parallel:
+                if progress:
+                    for _, name, args in prepared:
+                        progress(f"  {human_tool_progress(name, args)}")
+                if activity:
+                    for _, name, args in prepared:
+                        activity({"type": "tool", "state": "start", "name": name, "args": args})
+
+                def report_result(index, name, args, result):
+                    if activity:
+                        activity(tool_event(name, result[0], result[1]))
+
+                results = run_parallel_batch(
+                    runner, [(name, args) for _, name, args in prepared],
+                    on_result=report_result)
+            else:
+                results = []
+                for call, name, args in prepared:
+                    if args is None:
+                        ledger.record("tool", name=name, success=False,
+                                      error="Malformed arguments")
+                        if progress:
+                            progress(f"  · {name} (malformed arguments)")
+                        results.append((json.dumps({"error": "Malformed tool arguments"}), 0.0))
+                        continue
+                    checkpoint()
                     if progress:
                         progress(f"  {human_tool_progress(name, args)}")
                     if activity:
                         activity({"type": "tool", "state": "start", "name": name, "args": args})
-                    if name == "write_todos":
-                        emitted_plan = True
-                    tool_started = time.monotonic()
-                    output = runner.invoke(name, args)
-                    tool_elapsed = round(time.monotonic() - tool_started, 3)
-                    memory.observe(name, args, output)
+                    result = _timed_invoke(runner, name, args)
+                    results.append(result)
                     if activity:
-                        activity(tool_event(name, output, tool_elapsed))
+                        activity(tool_event(name, result[0], result[1]))
+            # Tool messages and memory observations stay in model call order, even
+            # when the batch finished out of order.
+            for (call, name, args), (output, _elapsed) in zip(prepared, results):
+                checkpoint()
+                if args is not None:
+                    memory.observe(name, args, output)
+                largest_output = max(largest_output, estimate_tokens(output))
                 turn.append({"role": "tool", "tool_call_id": call["id"], "content": output})
                 if runner.workspace.modified and runner.last_tests and runner.last_tests["passed"]:
                     ledger.finish("tests_passed", modified_files=sorted(runner.workspace.modified),

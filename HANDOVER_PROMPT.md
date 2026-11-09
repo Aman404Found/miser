@@ -52,15 +52,19 @@ All foundational and interface improvements have been implemented and verified:
 
 ## 3. Master Execution Plan: Phase-by-Phase Roadmap
 
-> **Status (2026-11-09):** Phases 1–5 are implemented and covered by tests (241 passing via
+> **Status (2026-11-09):** Phases 1–6 are implemented and covered by tests (249 passing via
 > `python3 -m unittest discover -s tests -q`). Phase 5 added `web_search` and `fetch_url`
 > with the untrusted-content contract; real search and fetch paths were exercised by a
 > host script (3 Tavily hits, two HTTP 200 page fetches, one live redirect), and a
 > model-driven task (`runs/session-e4d476853be7`) cited a fetched URL correctly. The
 > injected-instruction half is unit-tested only, because it needs a fixture HTTP server
-> and this host cannot bind sockets. A text-only final reply now finishes as `answered`
-> rather than `incomplete`; an empty reply stays `incomplete`. Bifrost is listening
-> again, so its golden run is no longer blocked. See
+> and this host cannot bind sockets. Phase 6 runs independent read-only tools on a small
+> worker pool with order-preserving results, stores structured compaction digests,
+> re-injects recent decisions after a real compaction, and lowers the threshold to 55%
+> when one tool result is large. Real local reads are slightly slower in parallel;
+> simulated network-bound calls were about 4× faster. A text-only final reply now
+> finishes as `answered` rather than `incomplete`; an empty reply stays `incomplete`.
+> Bifrost is listening again, so its golden run is no longer blocked. See
 > [`docs/implementation-status.md`](docs/implementation-status.md) and
 > [`docs/benchmark-results.md`](docs/benchmark-results.md) for what is measured versus pending.
 

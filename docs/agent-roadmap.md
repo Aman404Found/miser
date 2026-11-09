@@ -223,6 +223,33 @@ arrive. Tighten compaction: summarize rather than truncate, and compact before t
 **Acceptance:** wall-clock time for a multi-read step drops measurably, and a long
 session keeps its earlier decisions in context.
 
+> **Status (2026-11-09): implemented and measured.** A step whose calls all parse,
+> all belong to `READ_ONLY_TOOLS`, and number two or more now runs on a small worker
+> pool (`MAX_PARALLEL_TOOLS=8`) inside `run_agent`; starts are announced on the main
+> thread in model order, results arrive via `as_completed`, and tool messages,
+> `memory.observe` and the `tests_passed` early exit are emitted in call order, so
+> the transcript is identical to a sequential step. `run_tests`, `write_todos`,
+> edits, `run_command` and `verify_claim` stay sequential. A `tool_batch` ledger
+> event records the model-visible latency of each batch.
+>
+> Compaction now stores a structured digest (`compact_digest`) of each compacted
+> tool output plus a bounded `decisions` deque, and the decisions are re-injected
+> only when a real compaction happens. The threshold adapts: when the largest tool
+> output exceeds 12% of the budget, compaction fires at 55% of the budget instead of
+> 75%. `Ledger` and the web budget take locks (`RLock`, `Lock`) so parallel tools
+> cannot race the token counters or exceed the shared search budget.
+>
+> **Measurement (honest):** with real local `zoom` calls, parallelism is *not*
+> faster — median wall clock for 1/2/4/8 calls was 0.5/0.9/2.3/6.6 ms sequential
+> versus 0.4/1.5/3.6/10.3 ms parallel, because thread start-up dominates work that
+> already takes microseconds. With a simulated 150 ms per-call latency (labelled,
+> not a real service), four calls took 601 ms sequential versus 151 ms parallel,
+> about 4.0×. So the win is for network-bound tools (`web_search`, `fetch_url`),
+> and local reads pay a small overhead; outputs were byte-identical either way.
+> 249 tests pass (`python3 -m unittest discover -s tests -q`). No live concurrency
+> timing was recorded against a real remote tool because this host cannot bind
+> sockets.
+
 ### Phase 7 — Evaluation harness
 
 A small fixed task suite (edit a bug, add a test, refactor across two files, fix a

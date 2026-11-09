@@ -4,7 +4,7 @@ Living log of what has been done, what is verified, and what is next.
 Update this file at the end of every work session. Newest entries at the top of
 "Session log"; keep "Current state" accurate rather than appending forever.
 
-Last updated: 2026-11-09 (session 7)
+Last updated: 2026-11-09 (session 8)
 
 ---
 
@@ -29,17 +29,27 @@ Last updated: 2026-11-09 (session 7)
 
 - Python 3.12.3, `requires-python >=3.11`, no runtime dependencies.
 - `miser/` ≈ 27 files / ~5.8k LOC.
-- **Tests: 241 passing** — `python3 -m unittest discover -s tests -q` (exit 0, ~7.2s).
+- **Tests: 249 passing** — `python3 -m unittest discover -s tests -q` (exit 0, ~7.9s).
 - **Tools: 18** — `repo_map`, `list_files`, `find_files`, `search`, `zoom`, `recall`,
   `read_many`, `write_file`, `edit`, `edit_batch`, `apply_patch`, `blast_radius`,
   `run_tests`, `verify_claim`, `run_command`, `write_todos`, `web_search`, `fetch_url`.
-- `docs/agent-roadmap.md` Phases 1, 2, 3, 4 and 5 are implemented and covered by tests.
+- `docs/agent-roadmap.md` Phases 1–6 are implemented and covered by tests.
   Phase 5 was exercised against the real services by a host script: a real Tavily
   search returned 3 results and two real page fetches returned HTTP 200 (one of them
   followed a live redirect). A model-driven fetch task is now recorded too
   (`runs/session-e4d476853be7`, correct cited `Path.read_text` signature and version
   notes). The injected-instruction half is unit-tested only: it needs a fixture HTTP
   server, and this host cannot bind sockets.
+- **Phase 6 is in.** Independent read-only tool calls in one step run on a worker
+  pool (`MAX_PARALLEL_TOOLS=8`) with order-preserving events; `run_tests`,
+  `write_todos`, edits, `run_command` and `verify_claim` stay sequential. Compaction
+  keeps a structured digest per tool result plus a bounded `decisions` deque that is
+  re-injected only after a real compaction; the threshold drops from 75% to 55% when
+  one tool output exceeds 12% of the budget. `Ledger` uses an `RLock` and the web
+  search budget a `Lock` so parallel tools cannot race counters. Honest measurement:
+  real local reads are slightly *slower* in parallel (thread start-up dominates);
+  simulated 150 ms network calls were ~4× faster (601 ms → 151 ms for four). Outputs
+  were identical either way.
 - A text-only final reply finishes as `answered` (neutral info glyph), not
   `incomplete`; an empty reply stays `incomplete` and an output-capped reply stays
   `truncated`. Live confirmation: `runs/session-764157a062c5`.
@@ -74,6 +84,43 @@ Last updated: 2026-11-09 (session 7)
 ---
 
 ## Session log
+
+### 2026-11-09 — Session 8: Phase 6 (parallel read-only tools, tighter compaction)
+
+- **Parallel read-only batches.** `miser/tools.py` gained `READ_ONLY_TOOLS`.
+  `run_agent` now runs a step concurrently only when every call parsed, every tool is
+  read-only, and there are at least two calls. Starts are emitted on the main thread in
+  model order; results arrive via `as_completed`, but tool messages, `memory.observe`
+  and the `tests_passed` early exit are emitted in call order, so transcripts match a
+  sequential run. Workers never call `progress`/`activity`. A `tool_batch` ledger event
+  records model-visible batch latency (receipt ignores unknown kinds, so no schema
+  change).
+- **Tighter compaction.** `compact_digest` keeps structured summary keys (path, counts,
+  exit status, …) capped at `DIGEST_LIMIT=600` chars instead of a blind truncation. A
+  bounded `decisions` deque (`DECISION_LIMIT=300`) is injected into history only when a
+  real compaction happens, so long sessions keep earlier decisions.
+  `compaction_threshold` uses `token_budget * min(COMPACTION_RATIO, 0.55)` when the
+  largest tool output exceeds `token_budget * 0.12`, else `token_budget * 0.75`.
+- **Concurrency safety.** `miser/ledger.py` uses `threading.RLock`; `miser/web.py`
+  reserves search budget atomically under a `Lock`.
+- Tests: 7 new in `tests/test_agent.py` (parallel order, sequential fallback, mixed
+  tools, single call, unparsed call, digest/decisions, adaptive threshold) and
+  `BudgetConcurrencyTests` in `tests/test_web.py` (12 threads, `max_calls=5`, no
+  over-spend). One decisions test initially hit `budget_exhausted` because
+  `ledger.total_tokens` is cumulative; fixed by patching `COMPACTION_RATIO` to 0.05 and
+  raising `token_budget` to 20000 so the loop reaches `step_limit` while compacting.
+- Verification: focused `python3 -m unittest tests.test_agent tests.test_web -q` → 51 OK;
+  full `python3 -m unittest discover -s tests -q` → **249 OK** (~7.9 s).
+- Measurement, labelled honestly: real `zoom` calls (medians of 7) took 0.5/0.9/2.3/6.6
+  ms sequential vs 0.4/1.5/3.6/10.3 ms parallel for 1/2/4/8 calls — parallel is ~0.6×,
+  i.e. slower, for microsecond-scale local work. A simulated 150 ms per-call latency
+  took 601 ms sequential vs 151 ms parallel (~4.0×). No live remote concurrency timing
+  was recorded: this host cannot bind sockets, so `tests/test_web.py` patches
+  `_open_once` / `post_json`.
+- Docs updated: `docs/implementation-status.md` (Phase 6 section at top),
+  `docs/agent-roadmap.md` (Phase 6 status block), `docs/reference-design.md`
+  (compaction row no longer says "No summarization call"), `HANDOVER_PROMPT.md`
+  (Phases 1–6, 249 tests), this file.
 
 ### 2026-11-09 — Session 7: `answered` status, Phase 5 model-driven run recorded
 
@@ -363,9 +410,14 @@ Not verified / not done:
    tests, 222 total). Plan is re-injected every step, stale turns get a reminder,
    and both interfaces render one checklist per update. Not yet exercised by a live
    model-driven task.
-5. Phase 5 — `web_search` / `fetch_url` with the untrusted-content contract.
-6. Phase 6 — concurrent read-only tools; summarising compaction.
-7. Phase 7 — evaluation harness producing a dated `docs/benchmark-results.md` table.
+5. ~~Phase 5 — `web_search` / `fetch_url`~~ — **done and tested** (18 web tests; 241
+   total at the time). Live search and fetch paths exercised; injected-instruction
+   half unit-tested only.
+6. ~~Phase 6 — concurrent read-only tools; tighter compaction~~ — **done and tested**
+   (249 total). Parallel helps network-bound tools (~4× simulated) and costs a little
+   on local reads; decisions survive compaction.
+7. Phase 7 — evaluation harness producing a dated `docs/benchmark-results.md` table
+   (`miser evaluate`). This is the next phase.
 
 ## What the user may need to do
 

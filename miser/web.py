@@ -9,6 +9,7 @@ an OS sandbox.
 import ipaddress
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -163,11 +164,14 @@ class WebAccess:
         self.max_bytes = max_bytes
         self.max_chars = max_chars
         self.calls = 0
+        # Read-only web tools may run concurrently; check-and-increment must be atomic.
+        self._lock = threading.Lock()
 
     def _reserve(self):
-        if self.calls >= self.max_calls:
-            raise ValueError(f"Web-call limit reached ({self.max_calls} per run)")
-        self.calls += 1
+        with self._lock:
+            if self.calls >= self.max_calls:
+                raise ValueError(f"Web-call limit reached ({self.max_calls} per run)")
+            self.calls += 1
 
     def search(self, query, max_results=None, domains=None):
         query = str(query or "").strip()

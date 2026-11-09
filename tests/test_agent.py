@@ -13,9 +13,11 @@ TESTS_DIR = Path(__file__).resolve().parent
 if str(TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(TESTS_DIR))
 
-from miser.agent import run_agent
+from miser.agent import (DIGEST_LIMIT, compact_digest, compaction_threshold,
+                         run_agent)
 from miser.client import StreamInterrupted
 from miser.ledger import Ledger, estimate_tokens, receipt
+from miser.memory import WorkingMemory
 from miser.tools import SCHEMAS, ToolRunner
 from miser.workspace import Workspace
 
@@ -31,6 +33,16 @@ def response(name=None, arguments=None, usage=True):
     if usage:
         result["usage"] = {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}
     return result
+
+
+def batch_response(*calls, content=None):
+    """One assistant turn with several tool calls, in the given order."""
+    message = {"role": "assistant", "content": content,
+               "tool_calls": [{"id": f"batch-{index}", "type": "function",
+                                "function": {"name": name, "arguments": json.dumps(args)}}
+                               for index, (name, args) in enumerate(calls)]}
+    return {"choices": [{"message": message}], "model": "unit-test-fixture",
+            "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}}
 
 
 class ScriptedClient:
@@ -213,6 +225,119 @@ class AgentTests(unittest.TestCase):
         status = run_agent("Inspect", client, self.runner, self.ledger, max_steps=8, history_turns=2)
         self.assertEqual(status, "step_limit")
         self.assertLessEqual(max(client.lengths), 6)
+
+    def test_read_only_calls_run_as_one_parallel_batch(self):
+        class Reader:
+            def __init__(self):
+                self.calls = 0
+                self.next_messages = None
+
+            def complete(self, messages, tools, max_tokens):
+                self.calls += 1
+                if self.calls == 1:
+                    return batch_response(("list_files", {}),
+                                          ("zoom", {"path": "pricing.py", "level": 2}))
+                self.next_messages = messages
+                return response()
+
+        observed = []
+        original = WorkingMemory.observe
+
+        def record(instance, name, arguments, output):
+            observed.append(name)
+            return original(instance, name, arguments, output)
+
+        client = Reader()
+        with patch.object(WorkingMemory, "observe", record):
+            status = run_agent("Inspect the discount helper", client, self.runner, self.ledger)
+        self.assertEqual(status, "answered")
+        batches = [e for e in self.ledger.data["events"] if e["kind"] == "tool_batch"]
+        self.assertEqual(len(batches), 1)
+        self.assertTrue(batches[0]["parallel"])
+        self.assertEqual(batches[0]["tools"], ["list_files", "zoom"])
+        # Observations follow model call order, not completion order.
+        self.assertEqual(observed, ["run_tests", "list_files", "zoom"])
+        tools = [message for message in client.next_messages if message["role"] == "tool"]
+        self.assertEqual([m["tool_call_id"] for m in tools], ["batch-0", "batch-1"])
+        self.assertNotIn("version", json.loads(tools[0]["content"]))
+        self.assertIn("version", json.loads(tools[1]["content"]))
+
+    def test_mixed_batch_with_a_writer_stays_sequential(self):
+        class Planner:
+            def __init__(self):
+                self.calls = 0
+
+            def complete(self, messages, tools, max_tokens):
+                self.calls += 1
+                if self.calls == 1:
+                    return batch_response(
+                        ("list_files", {}),
+                        ("write_todos", {"todos": [{"task": "Inspect", "completed": False}]}))
+                return response()
+
+        status = run_agent("Inspect the discount helper", Planner(), self.runner, self.ledger)
+        self.assertEqual(status, "answered")
+        batches = [e for e in self.ledger.data["events"] if e["kind"] == "tool_batch"]
+        self.assertEqual(len(batches), 1)
+        self.assertFalse(batches[0]["parallel"])
+        self.assertEqual(batches[0]["tools"], ["list_files", "write_todos"])
+
+    def test_compaction_threshold_drops_after_one_large_result(self):
+        self.assertEqual(compaction_threshold(10000, 0), 7500)
+        self.assertEqual(compaction_threshold(10000, 2000), 5500)
+        self.assertEqual(compaction_threshold(10000, 1000), 7500)
+
+    @patch("miser.agent.COMPACTION_RATIO", 0.5)
+    def test_compaction_threshold_respects_a_lower_ratio(self):
+        self.assertEqual(compaction_threshold(10000, 0), 5000)
+        self.assertEqual(compaction_threshold(10000, 2000), 5000)
+
+    def test_compact_digest_keeps_scalars_and_stays_bounded(self):
+        raw = json.dumps({"path": "pricing.py", "version": "abc123",
+                          "text": "x" * 5000, "files": [{"path": "a.py"}],
+                          "passed": False})
+        digest = compact_digest(raw)
+        self.assertLessEqual(len(digest), DIGEST_LIMIT)
+        value = json.loads(digest)
+        self.assertEqual(value["path"], "pricing.py")
+        self.assertEqual(value["version"], "abc123")
+        self.assertFalse(value["passed"])
+        self.assertEqual(len(value["text"]), 200)
+        self.assertEqual(len(value["files"]), 1)
+
+    def test_compact_digest_handles_unparseable_output(self):
+        value = json.loads(compact_digest("not json", tool="zoom"))
+        self.assertIn("digest", value)
+        self.assertEqual(value["tool"], "zoom")
+        self.assertLessEqual(len(compact_digest("not json", tool="zoom", limit=80)), 80)
+
+    # A low ratio keeps the prompt compact every step; the budget is large enough
+    # that the loop reaches max_steps instead of stopping on budget first.
+    @patch("miser.agent.COMPACTION_RATIO", 0.05)
+    def test_earlier_decisions_are_reinjected_after_compaction(self):
+        body = "\n".join(f"def step_{i}(value):\n    return value + {i}\n" for i in range(60))
+        (self.repo / "big.py").write_text(body, encoding="utf-8")
+        decided = "Keeping the helper signature stable."
+
+        class Decider:
+            def __init__(self):
+                self.states = []
+
+            def complete(self, messages, tools, max_tokens):
+                self.states.append(json.loads(messages[1]["content"]))
+                return batch_response(("zoom", {"path": "big.py", "level": 2,
+                                                "start": 1, "end": 40, "refresh": True}),
+                                      content=decided)
+
+        client = Decider()
+        status = run_agent("Inspect big.py", client, self.runner, self.ledger,
+                           token_budget=20000, max_steps=12)
+        self.assertEqual(status, "step_limit")
+        self.assertTrue(any(e["kind"] == "compaction" for e in self.ledger.data["events"]))
+        reinjected = [state["earlier_decisions"] for state in client.states
+                      if "earlier_decisions" in state]
+        self.assertTrue(reinjected)
+        self.assertIn(decided, reinjected[-1])
 
     def test_acceptance_tests_protected(self):
         result = json.loads(self.runner.invoke("edit", {"path": "test_pricing.py", "old": "x", "new": "y",

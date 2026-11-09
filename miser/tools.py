@@ -85,6 +85,12 @@ SCHEMAS = [
 ]
 
 
+# Tools that only read: no workspace mutation, no ledger job state, no approval.
+# A batch made only of these can run concurrently.
+READ_ONLY_TOOLS = frozenset({"repo_map", "list_files", "find_files", "search", "zoom",
+                             "recall", "read_many", "blast_radius", "web_search", "fetch_url"})
+
+
 class ToolRunner:
     def __init__(self, workspace, ledger, test_command, test_timeout=60, max_test_runs=5,
                  approval_callback=None, command_approval=None, command_allowlist=None,
