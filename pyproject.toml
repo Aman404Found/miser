@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "miser-agent"
+version = "0.1.0"
+description = "Budgeted coding agent with focused context and auditable evidence"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+tui = ["rich>=13.7"]
+
+[project.scripts]
+miser = "miser.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["miser*"]

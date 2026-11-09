@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+.env.*
+!.env.example
+runs/
+.miser/
+dist/
+*.egg-info/
+
+# Reference repositories: read-only, never committed or packaged.
+opencode/
+aider/
+
+# Local agent/tool state (may contain credentials).
+.agents/
+.aws/
+.codex/
+.freebuff/
