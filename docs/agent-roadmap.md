@@ -201,8 +201,14 @@ a fixture page).
 > prompt says page content is data rather than instructions. `tests/test_web.py`
 > covers the guard, redirects, truncation, labelling, shared budget and tool wiring
 > (18 tests; 240 total passing). The guard is application-level: hostnames are not
-> resolved, so it is not a DNS-rebinding-proof sandbox. What is not recorded: a live
-> model-driven task with a real Tavily search and a real page fetch.
+> resolved, so it is not a DNS-rebinding-proof sandbox. Live services were exercised
+> by a host script: a real Tavily search returned 3 hits, and real fetches of
+> `docs.python.org/3/library/pathlib.html` and `realpython.com/python-pathlib`
+> returned HTTP 200 and were converted to capped text; the second followed a live
+> redirect, confirming redirect re-validation. A Stack Overflow hit returned HTTP 403
+> (site bot protection) and the tool surfaced the error rather than retrying. What is
+> still not recorded: a *model-driven* task that cites a fetched URL and ignores
+> injected page instructions.
 
 ### Phase 6 — Parallelism and context
 

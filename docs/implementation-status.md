@@ -21,11 +21,17 @@
   the receipt exposes `web_calls`.
 - Local verification: 240 tests passed, including 18 new cases in
   `tests/test_web.py` (URL policy, redirect re-validation, truncation, untrusted
-  labelling, budget, and tool wiring). No live Tavily or live http fetch was made
-  for this update: the host cannot bind sockets, so the fetch tests substitute the
-  transport and are labelled simulated. The acceptance sentence's live half — a
-  model-driven task citing a fetched URL while ignoring injected instructions — is
-  still pending.
+  labelling, budget, and tool wiring). The fetch tests substitute the transport
+  because the host cannot bind sockets, and are labelled simulated.
+- Live check (host script, real services, not model-driven): a real Tavily search
+  returned 3 results, and two real fetches returned HTTP 200 `text/html`
+  (`docs.python.org/3/library/pathlib.html`, `realpython.com/python-pathlib`),
+  reduced to text and capped at 8,000 characters. The Real Python fetch also had to
+  follow a live redirect, so redirect re-validation is confirmed against a real
+  server. One Stack Overflow result returned HTTP 403 (site bot protection); the tool
+  surfaced the error rather than retrying or bypassing it. Still pending: the
+  model-driven half of the acceptance sentence — a task that cites a fetched URL
+  while ignoring instructions embedded in the page text.
 
 ## Planning and progress update (Phase 4)
 

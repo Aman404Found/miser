@@ -54,8 +54,10 @@ All foundational and interface improvements have been implemented and verified:
 
 > **Status (2026-11-09):** Phases 1–5 are implemented and covered by tests (240 passing via
 > `python3 -m unittest discover -s tests -q`). Phase 5 added `web_search` and `fetch_url`
-> with the untrusted-content contract; Bifrost is listening again, so its golden run is no
-> longer blocked, though no live model-driven web task has been recorded yet. See
+> with the untrusted-content contract; its real search and fetch paths were exercised by a
+> host script (3 Tavily hits, two HTTP 200 page fetches, one live redirect), though no
+> live model-driven web task has been recorded yet. Bifrost is listening again, so its
+> golden run is no longer blocked. See
 > [`docs/implementation-status.md`](docs/implementation-status.md) and
 > [`docs/benchmark-results.md`](docs/benchmark-results.md) for what is measured versus pending.
 

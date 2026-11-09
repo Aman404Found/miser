@@ -34,8 +34,10 @@ Last updated: 2026-11-09 (session 6)
   `read_many`, `write_file`, `edit`, `edit_batch`, `apply_patch`, `blast_radius`,
   `run_tests`, `verify_claim`, `run_command`, `write_todos`, `web_search`, `fetch_url`.
 - `docs/agent-roadmap.md` Phases 1, 2, 3, 4 and 5 are implemented and covered by tests.
-  Phase 5's *live* half (real Tavily search + real page fetch inside a model-driven
-  task) is not recorded yet.
+  Phase 5 was exercised against the real services by a host script: a real Tavily
+  search returned 3 results and two real page fetches returned HTTP 200 (one of them
+  followed a live redirect). The model-driven half — a task that cites a fetched URL
+  while ignoring instructions embedded in page text — is still not recorded.
 - Phase 3 supervised execution exists (`miser/execution.py`), but the headless
   `python3 -m miser run` path has no approval channel, so `run_command` refuses there
   by design. Interactive `miser` and the TUI prompt per invocation.
@@ -100,8 +102,19 @@ Last updated: 2026-11-09 (session 6)
   test expected `http://localhost` to pass the default guard; fixed the test to
   assert the loopback guard still applies and to opt in with `allow_private=True`.
   Full suite: **240 tests OK**. Fetch tests patch `miser.web._open_once` and
-  `miser.web.post_json` because this host cannot bind sockets — labelled simulated;
-  no real Tavily or live fetch call was made.
+  `miser.web.post_json` because this host cannot bind sockets — labelled simulated.
+- **Live web check (real services, host script, not model-driven).** After
+  `miser.cli.load_env()`, `WebAccess.search("python 3.12 pathlib read_text encoding")`
+  returned 3 real Tavily hits. The first result URL
+  (`https://stackoverflow.com/questions/49428723/...`) failed with
+  `RuntimeError: Fetch failed: Page returned HTTP 403` — site-level bot protection,
+  not an implementation fault, and the tool reported it cleanly instead of retrying.
+  Two fetch-friendly pages then succeeded: `https://docs.python.org/3/library/pathlib.html`
+  and `https://realpython.com/python-pathlib` both returned HTTP 200 `text/html`,
+  converted to text, capped at 8,000 chars with `truncated: true`. Real Python's
+  redirect to the trailing-slash URL was followed and re-validated by `_follow`, so
+  the live redirect path is now confirmed too. Remaining gap: a model-driven task,
+  not the tools themselves.
 
 ### 2026-11-09 — Phase 4 planning and progress
 
