@@ -130,7 +130,14 @@ class ActualTerminalTests(unittest.TestCase):
                 ledger = next(record for record in records if record["status"] == "tests_passed")
                 self.assertEqual(ledger["status"], "tests_passed")
                 self.assertEqual(sum(event["kind"] == "model" for event in ledger["events"]), 1)
-                self.assertEqual(sum(event["kind"] == "tests" for event in ledger["events"]), 2)
+                # The rejected edit left the workspace unchanged: reuse its real
+                # baseline, but require a fresh passing check after this write.
+                interrupted = next(record for record in records if record['status'] == 'interrupted')
+                self.assertEqual(sum(event['kind'] == 'tests' for event in interrupted['events']), 1)
+                self.assertEqual(sum(event['kind'] == 'baseline_cache_hit' for event in ledger['events']), 1)
+                checks = [event for event in ledger['events'] if event['kind'] == 'tests']
+                self.assertEqual(len(checks), 1)
+                self.assertTrue(checks[0]['passed'])
                 drain(.2)
                 capture_path = os.getenv("MISER_UI_CAPTURE")
                 if capture_path:

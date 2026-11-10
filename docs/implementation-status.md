@@ -5,6 +5,31 @@ working tree passes 290 tests. See [audit report](audit-report.md) for fixes and
 open risks. Counts and live-service statements below describe their recorded
 sessions, not current gateway availability or a security guarantee.
 
+## Charcoal and observable activity (2026-11-10)
+
+Current full suite: **447 in 32.424s, OK**. Shared #141414 charcoal theme, neutral
+surfaces and subdued cyan/blue accents replace navy. A persistent activity rail
+shows actual model/tool/check/approval stages above the composer. This adds no
+model calls and does not expose private thinking. Separate provider reasoning
+summary streaming remains unimplemented. Actual native CLI PTY regressions and
+80×24/120×36 visually inspected cell captures are documented in terminal-ui.md.
+
+## Guarded deletion and lightweight file mode (2026-11-10)
+
+Latest full suite: **446 tests in 25.650s, OK**, baseline 430/24.859s. New delete_file
+requires a current read/version, fresh approval and retained private recovery copy.
+It is excluded from parallel read-only batches. Deletion-aware diffs, live undo and
+compacted-memory invalidation are covered by regressions. /files on exposes seven
+bounded text tools and a shorter prompt, no automatic tests/commands/architect;
+changes are edited_unverified. Default coding catalog is now 20 and required checks
+remain default. /files off restores ordinary routing; /checks required restores checks
+if previously manual. App-level final-syscall isolation limits remain.
+
+Actual CLI PTY with a simulated provider passed cancel/no writes, fresh approval,
+delete/create in three requests with zero tests, unverified display, undo bytes/mode
+and clean exit. No live speedup or modification of user cat/config files claimed.
+See [file-operation evidence, usage and limits](file-operations.md).
+
 ## Timing and explicit manual checks (2026-11-10)
 
 Latest full suite: **430 tests in 81.431s, OK**. Chat displays selected route/check

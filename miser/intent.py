@@ -188,6 +188,9 @@ def classify_intent(text: str) -> IntentResult:
     if raw.startswith("/"):
         return IntentResult(kind="command", reason="Slash command")
 
+    if re.fullmatch(r'''(?:please\s+)?(?:say|rephrase|paraphrase)\s*[-:]?\s*(["']).+\1\s*-?\s*in\s+(?:a\s+)?better\s+way[.!?]?''', raw, re.I | re.S):
+        return IntentResult(kind="question", reason="Quoted rephrasing request; answer only")
+
     if parse_file_read(raw) is not None:
         return IntentResult(kind="file_read", reason="Explicit local file display; no model or tests required")
 

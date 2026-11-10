@@ -1,6 +1,7 @@
 import difflib
 import json
 import os
+from pathlib import Path
 import signal
 import subprocess
 import tempfile
@@ -12,7 +13,7 @@ from .knowledge import ProjectKnowledge
 from .todos import MAX_TODOS, MAX_TASK_CHARS, TodoList
 from .verification import EvidenceSearch
 from .web import WebAccess
-from .workspace import diff_previews
+from .workspace import diff_previews, digest, deletion_diff
 
 
 def function(name, description, properties=None, required=None):
@@ -43,6 +44,8 @@ SCHEMAS = [
               "max_chars": INTEGER}, ["reads"]),
     function("write_file", "Create one new file with complete text. Existing files must use edit. Tests protected.",
              {"path": STRING, "content": STRING}, ["path", "content"]),
+    function("delete_file", "Delete one previously-read regular text file. Current version and fresh host approval required; recovery copy retained.",
+             {"path": STRING, "expected_version": STRING}, ["path", "expected_version"]),
     function("edit", "Unique exact replacement; requires prior read and current version. Tests protected.",
              {"path": STRING, "old": STRING, "new": STRING, "expected_version": STRING},
              ["path", "old", "new", "expected_version"]),
@@ -106,13 +109,14 @@ READ_ONLY_TOOLS = frozenset({"repo_map", "list_files", "find_files", "search", "
                              "recall", "read_many", "blast_radius", "web_search", "fetch_url"})
 INSPECTION_TOOLS = (READ_ONLY_TOOLS - {"web_search", "fetch_url"}) | {"ask_user"}
 RESEARCH_TOOLS = READ_ONLY_TOOLS | {"verify_claim", "ask_user"}
+FILE_TOOLS = frozenset({"zoom", "read_many", "write_file", "edit", "edit_batch", "delete_file", "ask_user"})
 
 
 def schemas_for_profile(profile):
     """The same host-selected set drives the prompt and the dispatcher guard."""
-    allowed = {"coding": None, "inspect": INSPECTION_TOOLS, "research": RESEARCH_TOOLS}
+    allowed = {"coding": None, "inspect": INSPECTION_TOOLS, "research": RESEARCH_TOOLS, "files": FILE_TOOLS}
     if profile not in allowed:
-        raise ValueError("Tool profile must be coding, inspect or research")
+        raise ValueError("Tool profile must be coding, inspect, research or files")
     names = allowed[profile]
     return [schema for schema in SCHEMAS if names is None or schema["function"]["name"] in names]
 
@@ -122,7 +126,7 @@ class ToolRunner:
                  approval_callback=None, command_approval=None, command_allowlist=None,
                  command_timeout=120, max_command_runs=10, profile="coding",
                  clarification_callback=None, use_project_memory=True, mcp_access=None,
-                 test_policy="required"):
+                 test_policy="required", deletion_approval=None):
         if test_policy not in {"required", "manual"}:
             raise ValueError("Test policy must be required or manual")
         self.test_policy = test_policy
@@ -134,7 +138,8 @@ class ToolRunner:
         if self.mcp is not None:
             if self.mcp.ledger is not ledger:
                 raise ValueError("MCP access belongs to another task ledger")
-            self.schemas += MCP_SCHEMAS
+            if profile != "files":
+                self.schemas += MCP_SCHEMAS
         self.tool_names = frozenset(item["function"]["name"] for item in self.schemas)
         if (profile == "coding" and test_policy == "required" and not test_command) or test_timeout < 1:
             raise ValueError("A nonempty acceptance command and positive timeout are required")
@@ -144,6 +149,7 @@ class ToolRunner:
         self.test_timeout = test_timeout
         self.max_test_runs = max_test_runs
         self.approval_callback = approval_callback
+        self.deletion_approval = deletion_approval
         self.commands = CommandSupervisor(
             workspace, ledger, approval_callback=command_approval,
             allowlist=command_allowlist, timeout=command_timeout,
@@ -231,6 +237,12 @@ class ToolRunner:
             raise ValueError("Edit requires a path")
         if self.protected_path(path):
             raise ValueError("Acceptance test files are protected")
+        if self.profile == "files":
+            target = Path(path)
+            if (target.suffix.lower() not in {".txt", ".md", ".rst"}
+                    or target.name.lower().startswith("requirements")
+                    or target.name.lower() == "cmakelists.txt"):
+                raise ValueError("Files mode only changes ordinary .txt, .md or .rst files; use /files off for code/config")
 
     @staticmethod
     def _preview(path, old, new):
@@ -245,6 +257,17 @@ class ToolRunner:
 
     def preview_edits(self, name, arguments):
         """Build {path: unified-diff preview} for an edit call without writing anything."""
+        if name == "delete_file":
+            path = str(arguments.get("path") or "")
+            self.guard_edit(path)
+            target = self.workspace.path(path)
+            if not target.is_file():
+                raise ValueError("Deletion requires a regular text file")
+            current = self.workspace.text(path)
+            if (path not in self.workspace.snapshots or current != self.workspace.snapshots[path]
+                    or digest(current) != arguments.get("expected_version")):
+                raise ValueError("Read the file and use its current version before deleting")
+            return {path: deletion_diff(path, current, target.stat().st_mode)}
         if name == "edit":
             path = str(arguments.get("path") or "")
             return {path: self._preview(path, arguments.get("old"), arguments.get("new"))}
@@ -314,15 +337,20 @@ class ToolRunner:
             elif name in {"repo_map", "list_files", "find_files", "search", "zoom", "recall",
                           "read_many", "blast_radius"}:
                 result = getattr(self.workspace, name)(**arguments)
-            elif name in {"edit", "edit_batch", "apply_patch", "write_file"}:
+            elif name in {"edit", "edit_batch", "apply_patch", "write_file", "delete_file"}:
                 previews = self.preview_edits(name, arguments)
                 for path, preview in previews.items():
                     self.guard_edit(path)
-                    if self.approval_callback and not self.approval_callback(path, preview[:6000]):
+                    if name == "delete_file":
+                        if self.deletion_approval is None or not self.deletion_approval(path, preview):
+                            raise ValueError("Deletion requires fresh approval; file was not deleted")
+                    elif self.approval_callback and not self.approval_callback(path, preview[:6000]):
                         raise ValueError(f"Edit to {path} rejected by user")
                 method = {"edit": "edit", "edit_batch": "edit_batch",
-                          "apply_patch": "apply_unified_diff", "write_file": "write_file"}[name]
+                          "apply_patch": "apply_unified_diff", "write_file": "write_file", "delete_file": "delete_file"}[name]
                 call_args = {"patch_text": arguments.get("patch")} if name == "apply_patch" else arguments
+                if name == "delete_file":
+                    call_args = {**arguments, "cancelled": self.cancelled}
                 # A failed write may leave recoverable changes if rollback also fails.
                 # Never reuse pre-edit acceptance results in that case.
                 self.last_tests = None

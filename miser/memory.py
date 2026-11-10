@@ -31,7 +31,7 @@ class WorkingMemory:
             entry["error"] = str(value["error"])[:250]
             self.errors.append(f"{name}: {str(value['error'])[:200]}")
         else:
-            for field in ("version", "edited", "unchanged", "passed", "timed_out"):
+            for field in ("version", "edited", "deleted", "unchanged", "passed", "timed_out"):
                 if field in value:
                     entry[field] = value[field]
             if name == "search":
@@ -42,8 +42,22 @@ class WorkingMemory:
                 record["version"] = value["version"]
             if name == "zoom":
                 record["read"] = True
+            if "error" not in value:
+                if name == "delete_file" and value.get("deleted"):
+                    record["deleted"] = True
+                    record["read"] = False
+                    record.pop("version", None)
+                elif name in {"zoom", "write_file"} and "version" in value:
+                    record.pop("deleted", None)
             if name in ("edit", "edit_batch", "apply_patch"):
                 record["edited"] = bool(value.get("edited"))
+        if name == "read_many" and isinstance(value.get("reads"), list):
+            for row in value["reads"]:
+                if (isinstance(row, dict) and isinstance(row.get("path"), str)
+                        and isinstance(row.get("version"), str) and "error" not in row):
+                    record = self.files.setdefault(row["path"][:250], {})
+                    record.update(version=row["version"], read=True)
+                    record.pop("deleted", None)
         if name == "run_tests":
             self.test_status = {"passed": bool(value.get("passed")),
                                 "exit_code": value.get("exit_code"),

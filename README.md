@@ -34,6 +34,11 @@ and mouse accessible. Only an explicit **Approve all edits** disables later edit
 prompts; commands and MCP tools still require fresh approval. `/confirm on` restores
 edit prompts. `/clear` clears visible history without undoing files.
 
+The UI now uses warm charcoal surfaces and muted cyan/blue accents. A persistent
+ACTIVITY rail shows real request/tool/test/approval stages above the composer,
+including at narrow widths. This is execution status, not private model reasoning;
+provider reasoning-summary streaming is not currently implemented.
+
 Each chat prompt now shows its selected route and test policy. A compact timing
 summary separates model-request waits, acceptance checks and other tool sums;
 `/timing` repeats the latest diagnostics without model calls. Parallel/nested work
@@ -41,8 +46,15 @@ can overlap, so category sums are not a breakdown that adds up to elapsed wall t
 Timing is visibility, not a measured speedup. For lightweight edits, explicitly
 choose `/checks manual` to skip automatic acceptance commands; edited results are
 labelled **unverified**. `/checks required` restores the default baseline/post-edit
-checks. Path/version/approval guards and command allowlists stay active. File
-removal is not yet supported; the agent must not attempt a shell workaround.
+checks. Path/version/approval guards and command allowlists stay active.
+
+For lightweight text-file workflows, use `/files on`: seven tools, a shorter prompt,
+no architect or automatic tests, and explicit **unverified** results. Changes are
+limited to .txt/.md/.rst paths with sensitive/test/config-name guards. `delete_file`
+requires a prior read/current version, a fresh approval and a private recovery copy;
+no shell deletion is enabled. `/undo` supports tracked deletion and refuses external
+replacements. Separate delete/create calls are not atomic. Return with `/files off`
+and `/checks required` for normal verified coding. See [file operations and evidence](docs/file-operations.md).
 
 `--resume` restores session metrics, not full conversation. `--exec 'TASK'`
 (repeatable) preserves non-interactive automation; `--no-stream` disables streaming.
@@ -57,7 +69,7 @@ specified parent directory.
 
 Repository questions such as `Explain miser/ledger.py` now use a read-only model
 loop that reads actual source. Local inspection exposes 9 tools, web research 12,
-and coding 19. Inspection/research skip acceptance tests and architect calls and
+and coding 20. Inspection/research skip acceptance tests and architect calls and
 refuse edits, subprocess commands and tests at dispatch. Coding retains acceptance
 verification and fresh command approval. Profile inference is a language heuristic;
 the CLI can enforce an explicit read-only profile:

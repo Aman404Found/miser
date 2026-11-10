@@ -12,13 +12,15 @@ import sys
 import unicodedata
 
 # Shared by the plain terminal renderers and the optional Rich full-screen UI.
-BG = "#0b0d13"
-SURFACE = "#151923"
-TEXT = "#e6eaf2"
-MUTED = "#9aa7bd"
-FAINT = "#485267"
-ACCENT = "#4f8cff"
-CYAN = "#8bd5e5"
+BG = "#141414"
+SURFACE = "#1e1e20"
+PANEL = "#19191c"
+LINE = "#2b2b31"
+TEXT = "#e6e2dc"
+MUTED = "#a5a29f"
+FAINT = "#49494d"
+ACCENT = "#7799b8"
+CYAN = "#a1c5cd"
 OK = "#34d399"
 BAD = "#f87171"
 WARN = "#fbbf24"

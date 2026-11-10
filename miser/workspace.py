@@ -4,10 +4,12 @@ import ast
 import difflib
 import fnmatch
 import hashlib
+import json
 import os
 import re
 import stat
 import tempfile
+import uuid
 from pathlib import Path
 
 
@@ -18,6 +20,19 @@ SECRET_SUFFIXES = {".pem", ".key", ".p12", ".pfx"}
 
 def digest(text):
     return hashlib.sha256(text.encode()).hexdigest()
+
+
+def deletion_diff(path, content, mode):
+    """Git-applicable deletion, including empty files and missing final newline."""
+    git_mode = "100755" if mode & stat.S_IXUSR else "100644"
+    chunks = [f"diff --git a/{path} b/{path}\ndeleted file mode {git_mode}\n"]
+    lines = list(difflib.unified_diff(content.splitlines(keepends=True), [],
+                                    fromfile="a/" + path, tofile="/dev/null"))
+    for line in lines:
+        chunks.append(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n")
+    if not lines:
+        chunks.append(f"--- a/{path}\n+++ /dev/null\n")
+    return "".join(chunks)
 
 
 def _glob_match(name, pattern):
@@ -248,6 +263,8 @@ class Workspace:
         self.modified = set()
         self.originals = {}
         self.last_written = {}
+        self.deleted = set()
+        self.deleted_modes = {}
         self.symbol_cache = {}
 
     def path(self, name):
@@ -580,6 +597,8 @@ class Workspace:
             # Exclusive creation also refuses a file/symlink appearing after exists().
             with target.open("x", encoding="utf-8", newline="") as handle:
                 created = True
+                if path in self.deleted_modes:
+                    os.fchmod(handle.fileno(), self.deleted_modes[path])
                 handle.write(content)
         except BaseException as error:
             if created:
@@ -587,12 +606,105 @@ class Workspace:
             if isinstance(error, OSError):
                 raise RuntimeError(f"Could not create '{path}': {error}") from error
             raise
-        self.originals[path] = None  # sentinel: the file did not exist before this session
+        self.originals.setdefault(path, None)  # preserve the original across delete/recreate
+        self.deleted.discard(path)
         self.last_written[path] = content
         self.snapshots[path] = content
         self.modified.add(path)
         self.symbol_cache.clear()
         return {"path": path, "version": digest(content), "created": True}
+
+    def _save_deletion_backup(self, path, content, mode):
+        """Private POSIX recovery copy, flushed before unlink; never model-accessible."""
+        if os.name != "posix":
+            raise ValueError("Recoverable deletion currently requires POSIX")
+        metadata = self.root / ".miser"
+        metadata.mkdir(mode=0o700, exist_ok=True)
+        parent = os.open(metadata, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        directory = None
+        name = uuid.uuid4().hex
+        try:
+            try:
+                os.mkdir("deleted", 0o700, dir_fd=parent)
+            except FileExistsError:
+                pass
+            directory = os.open("deleted", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+                if handle.write(content) != len(content):
+                    raise OSError("Incomplete deletion recovery copy")
+                handle.flush()
+                os.fsync(handle.fileno())
+            fd = os.open(name + ".json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump({"path": path, "original_mode": mode, "version": digest(content),
+                           "backup": name}, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.fsync(directory)
+        finally:
+            if directory is not None:
+                os.close(directory)
+            os.close(parent)
+        return f".miser/deleted/{name}"
+
+    def delete_file(self, path, expected_version, cancelled=None):
+        """Remove one previously-read regular text file, with a retained recovery copy.
+
+        Version/identity rechecks narrow races; this is not an OS sandbox or a
+        crash-atomic multi-file transaction. Backups intentionally survive undo.
+        """
+        target = self.path(path)
+        info = target.stat()
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("Deletion requires a regular text file")
+        if path not in self.snapshots:
+            raise ValueError("Read the file with zoom before deleting")
+        current = self.text(path)
+        if current != self.snapshots[path] or digest(current) != expected_version:
+            raise ValueError("File changed or version is stale; read again before deleting")
+        if cancelled is not None and cancelled():
+            raise KeyboardInterrupt
+        backup = self._save_deletion_backup(path, current, stat.S_IMODE(info.st_mode))
+        fresh = self.path(path).stat()
+        if ((fresh.st_dev, fresh.st_ino) != (info.st_dev, info.st_ino)
+                or self.text(path) != current):
+            raise ValueError(f"File changed before deletion; recovery copy: {backup}")
+        if cancelled is not None and cancelled():
+            raise KeyboardInterrupt
+        self.path(path).unlink()
+        self.originals.setdefault(path, current)
+        self.deleted_modes.setdefault(path, stat.S_IMODE(info.st_mode))
+        self.last_written[path] = None
+        self.deleted.add(path)
+        self.modified.add(path)
+        self.symbol_cache.clear()
+        return {"path": path, "files": [path], "deleted": True, "backup": backup,
+                "note": "Recovery copy retained. Separate file operations are not atomic together."}
+
+    def undo_delete(self, path):
+        """Host-only undo; exclusive creation refuses external replacements."""
+        if path not in self.deleted or self.last_written.get(path) is not None:
+            raise ValueError("No tracked deletion to undo")
+        target = self.path(path)
+        if target.exists() or target.is_symlink():
+            raise ValueError("Deleted path reappeared; refusing to overwrite it")
+        original = self.originals[path]
+        if original is None:  # created then deleted: original state was absent
+            return
+        identity = None
+        try:
+            with target.open("x", encoding="utf-8", newline="") as handle:
+                info = os.fstat(handle.fileno())
+                identity = (info.st_dev, info.st_ino)
+                os.fchmod(handle.fileno(), self.deleted_modes[path])
+                handle.write(original)
+        except BaseException:
+            if identity is not None:
+                info = self.path(path).lstat()
+                if (info.st_dev, info.st_ino) == identity:
+                    self.path(path).unlink()
+            raise
 
     def recall(self, path):
         if path not in self.snapshots:

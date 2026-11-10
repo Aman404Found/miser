@@ -3,6 +3,7 @@ import unittest
 from rich.text import Text
 
 from miser.tui import screen
+from miser.ui import theme
 
 
 def welcome(**overrides):
@@ -145,7 +146,7 @@ class ConversationLayoutTests(unittest.TestCase):
         lines = screen.render(state)
         composer = next(line for line in lines if "abc" in line.plain)
         spans = [(span.start, span.end) for span in composer.spans
-                 if span.style is not None and "on #4f8cff" in str(span.style)]
+                 if span.style is not None and f"on {theme.ACCENT}" in str(span.style)]
         self.assertTrue(spans, "expected a visible cursor cell in the composer")
 
     def test_empty_conversation_keeps_composer_and_placeholder(self):

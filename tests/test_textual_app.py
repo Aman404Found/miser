@@ -14,6 +14,22 @@ from test_agent import response
 
 
 class NativeApplicationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_charcoal_theme_and_persistent_activity_show_operations_not_invented_reasoning(self):
+        from textual.widgets import Static
+        from miser.ui import theme
+        app = MiserApp(self.terminal)
+        async with app.run_test(size=(80,24)) as pilot:
+            self.assertEqual(app.screen.styles.background.hex.lower(), '#141414')
+            self.assertEqual(theme.BG, '#141414')
+            await app._activity({'type':'model_start','step':2})
+            app._refresh_status()
+            self.assertIn('Model request', str(app.ui('#workline',Static).render()))
+            await app._activity({'type':'tool','state':'start','name':'zoom','args':{'path':'note.txt'}})
+            app._refresh_status()
+            self.assertIn('Reading note.txt', str(app.ui('#workline',Static).render()))
+            self.assertLessEqual(app.ui('#composer').region.bottom,24)
+            self.assertEqual(self.terminal.session_model_requests,0)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -28,6 +44,23 @@ class NativeApplicationTests(unittest.IsolatedAsyncioTestCase):
                 return
         self.fail("Backend worker did not finish")
 
+    async def test_home_and_session_rail_show_only_real_workspace_facts_and_activity(self):
+        from textual.widgets import Static
+        app = MiserApp(self.terminal)
+        async with app.run_test(size=(160,45)) as pilot:
+            home = str(app.ui("#welcome-meta", Static).render())
+            self.assertIn("simulated/native", home)
+            self.assertIn(self.root.name, home)
+            self.assertIn("No completed work", str(app.ui("#recent-details", Static).render()))
+            await app._activity({"type": "tool", "state": "result", "name": "zoom",
+                                 "ok": True, "elapsed": .02, "detail": "app.py"})
+            await pilot.pause()
+            recent = str(app.ui("#recent-details", Static).render())
+            self.assertIn("zoom", recent)
+            self.assertIn("0.02s", recent)
+            self.assertEqual(self.terminal.session_model_requests, 0)
+            self.assertEqual(self.terminal.session_tool_calls, 0)
+
     async def test_native_layout_and_composer_at_required_sizes(self):
         self.assertTrue(issubclass(MiserApp, App))
         for size in ((80, 24), (120, 36), (160, 45)):
@@ -37,6 +70,8 @@ class NativeApplicationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertGreater(app.query_one("#conversation").size.height, 5)
                 self.assertTrue(app.query_one("#composer").region.bottom <= size[1])
                 self.assertTrue(app.query_one("#welcome").display)
+                self.assertFalse(app.query_one("#inspector").display)
+                app._show_home(False)
                 self.assertEqual(app.query_one("#inspector").display, size[0] >= 118)
                 await pilot.press("h", "i", "ctrl+j", "x")
                 self.assertEqual(app.query_one("#prompt", TextArea).text, "hi\nx")
@@ -133,6 +168,8 @@ class NativeApplicationTests(unittest.IsolatedAsyncioTestCase):
     async def test_resize_completion_and_multiline_history_remain_native(self):
         app = MiserApp(self.terminal)
         async with app.run_test(size=(160, 45)) as pilot:
+            self.assertFalse(app.ui("#inspector").display)
+            app._show_home(False)
             self.assertTrue(app.ui("#inspector").display)
             await pilot.resize_terminal(80, 24)
             await pilot.pause()
@@ -282,6 +319,47 @@ class NativeApplicationTests(unittest.IsolatedAsyncioTestCase):
                         self.terminal.cancel_event.set()
                         worker.join(1)
             self.assertEqual(results, [True, True, False])
+
+
+    async def test_file_delete_cancel_then_fresh_approval_has_no_approve_all_and_keeps_undo(self):
+        from textual.widgets import Button
+        path = self.root / 'note.txt'
+        path.write_text('Keep me until approved.\n')
+        class Client:
+            calls = 0
+            def complete(inner, messages, tools, **kwargs):
+                inner.calls += 1
+                if inner.calls == 1:
+                    return response('zoom', {'path':'note.txt','level':2})
+                if inner.calls == 2:
+                    return response('delete_file', {'path':'note.txt',
+                        'expected_version':json.loads(messages[-1]['content'])['version']})
+                answer = response()
+                answer['choices'][0]['message']['content'] = 'Deleted with recovery copy; tests not run.'
+                return answer
+        self.terminal.task_mode = 'files'
+        self.terminal.confirm_edits = False
+        self.terminal.client_factory = lambda _: Client()
+        app = MiserApp(self.terminal)
+        async with app.run_test(size=(80,24)) as pilot:
+            for attempt in range(2):
+                await app.submit_text('Delete note.txt')
+                for _ in range(100):
+                    await pilot.pause(.03)
+                    if isinstance(app.screen, ApprovalScreen) and {
+                            button.id for button in app.screen.query(Button)} >= {'reject', 'approve'}:
+                        break
+                self.assertIsInstance(app.screen, ApprovalScreen)
+                # The screen is pushed before its children finish composing.
+                self.assertEqual({button.id for button in app.screen.query(Button)}, {'reject','approve'})
+                self.assertTrue(path.exists())
+                await pilot.press('ctrl+c' if attempt == 0 else 'tab', *([] if attempt == 0 else ['enter']))
+                await self.idle(app, pilot)
+                self.assertEqual(path.exists(), attempt == 0)
+            self.assertEqual(self.terminal.last_ledger.data['status'], 'edited_unverified')
+            self.assertFalse(any(event['kind']=='tests' for event in self.terminal.last_ledger.data['events']))
+            self.terminal.undo()
+            self.assertEqual(path.read_text(), 'Keep me until approved.\n')
 
 
 class NativeLaunchSelectionTests(unittest.TestCase):

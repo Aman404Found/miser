@@ -469,9 +469,9 @@ class AuditTests(unittest.TestCase):
         from test_agent import batch_response
 
         names = {schema["function"]["name"] for schema in SCHEMAS}
-        self.assertEqual(len(names), 19)  # ask_user adds one capability to the audited catalog
+        self.assertEqual(len(names), 20)  # guarded delete_file adds one capability
         self.assertTrue({"edit", "edit_batch", "apply_patch", "write_file", "run_tests",
-                         "run_command", "write_todos", "verify_claim"}.isdisjoint(READ_ONLY_TOOLS))
+                         "run_command", "write_todos", "verify_claim", "delete_file"}.isdisjoint(READ_ONLY_TOOLS))
         for name in sorted(names - READ_ONLY_TOOLS):
             class Client:
                 def complete(self, *args, **kwargs):

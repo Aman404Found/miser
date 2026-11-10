@@ -10,6 +10,8 @@ import json
 import os
 import re
 import shlex
+import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -17,22 +19,23 @@ import time
 import uuid
 from pathlib import Path
 
-from .agent import run_agent
+from .agent import run_agent, response_problem
 from .client import ModelClient, parse_models
 from .intent import classify_intent, parse_file_read, task_profile
 from .ledger import Ledger, receipt, timing_summary
 from .knowledge import ProjectKnowledge
 from .mcp import MCPAccess, load_config
 from .tools import ToolRunner
+from .execution import sanitised_env
 from .ui import render, theme
 from .ui.prompt import InputSession, read_multiline
 from .ui.spinner import WorkingIndicator
-from .workspace import Workspace
+from .workspace import Workspace, deletion_diff
 
 clean = theme.clean
 
 COMMANDS = ["/help", "/status", "/usage", "/model", "/architect", "/test", "/budget",
-            "/checks",
+            "/checks", "/files",
             "/map", "/diff", "/confirm", "/autocommit", "/undo", "/run", "/clear",
             "/history", "/receipt", "/timing", "/memory", "/remember", "/forget", "/mcp", "/exit", "/quit"]
 
@@ -44,6 +47,7 @@ def help_text():
             ("/test [COMMAND]", "set or show the acceptance command"),
             ("/run", "run acceptance tests now (no model call)"),
             ("/checks [required|manual]", "host policy; manual edits remain unverified"),
+            ("/files [on|off]", "seven tools for bounded text edits, no automatic tests"),
             ("/diff [git|full]", "review the last patch, session changes, or git diff"),
             ("/undo", "revert files changed in this session"),
             ("/confirm [on|off]", "prompt before each edit"),
@@ -107,6 +111,7 @@ class Terminal:
         self.last_ledger = None
         self.last_bill = None
         self.last_diff = ""
+        self._baseline_cache = None
         # The full-screen UI narrows output to its transcript width; line mode
         # leaves this unset and keeps using the real terminal width.
         self.width_override = None
@@ -127,6 +132,7 @@ class Terminal:
         self.current_task = None
         self.last_route = None
         self.test_policy = "required"
+        self.task_mode = "auto"
         self.last_timing = None
         self._question_model_seconds = None
         self.batch_mode = False
@@ -291,6 +297,7 @@ class Terminal:
             ("Gateway", f"{os.getenv('BIFROST_URL', 'http://localhost:8080/openai')} · {self.gateway_state}"),
             ("Current tests:", tests),
             ("Check policy", self.test_policy),
+            ("Task mode", self.task_mode),
             ("Current budget:", f"{self.budget:,} tokens per task"),
             ("Approvals", "ON (prompts before edits)" if self.confirm_edits else "OFF (guarded edits apply directly)"),
             ("Modified", modified_text),
@@ -330,6 +337,18 @@ class Terminal:
                 self.say(render.render_diff(diff, width, max_lines=None, glyphs=self.glyphs))
                 continue
             self.say(render.notice("Edit rejected; nothing was written.", width, self.glyphs))
+            return False
+
+    def prompt_delete_approval(self, path, diff):
+        """Destructive operation: fresh yes/no approval, never approve-all."""
+        if self.batch_mode or (self.read is input and not sys.stdin.isatty()):
+            return False
+        self.spinner.stop()
+        self.say(render.approval_header(path, diff, self.width()))
+        self.say(render.render_diff(diff, self.width(), max_lines=None, glyphs=self.glyphs))
+        try:
+            return self.read("Delete this file? Recovery copy retained. [y]es / [n]o ").strip().lower() in {"y", "yes"}
+        except (EOFError, KeyboardInterrupt):
             return False
 
     def prompt_command_approval(self, command: str):
@@ -395,6 +414,20 @@ class Terminal:
         for path in list(self.workspace.modified):
             if path in self.workspace.originals:
                 original = self.workspace.originals[path]
+                if path in self.workspace.deleted:
+                    try:
+                        self.workspace.undo_delete(path)
+                    except (OSError, ValueError, UnicodeError):
+                        conflicts.append(path)
+                        continue
+                    reverted.append(path)
+                    self.workspace.modified.discard(path)
+                    self.workspace.deleted.discard(path)
+                    self.workspace.deleted_modes.pop(path, None)
+                    self.workspace.originals.pop(path, None)
+                    self.workspace.last_written.pop(path, None)
+                    self.workspace.snapshots.pop(path, None)
+                    continue
                 try:
                     current = self.workspace.text(path)
                 except (OSError, ValueError, UnicodeError):
@@ -416,6 +449,7 @@ class Terminal:
                 self.workspace.originals.pop(path, None)
                 self.workspace.last_written.pop(path, None)
                 self.workspace.snapshots.pop(path, None)
+                self.workspace.deleted_modes.pop(path, None)
         self.workspace.reads.clear()
         self.last_diff = ""
         if conflicts:
@@ -557,6 +591,14 @@ class Terminal:
                 argv = shlex.split(value)
                 self.command = argv
                 self.say(f"Acceptance: {shlex.join(argv)}")
+        elif command == "/files":
+            if value and value not in {"on", "off"}:
+                raise ValueError("Use /files on or /files off")
+            if value:
+                self.task_mode = "files" if value == "on" else "auto"
+            self.say("Task mode: " + self.task_mode + (
+                " · bounded text files; tests not run; deletions always require approval"
+                if self.task_mode == "files" else " · normal task routing and check policy"))
         elif command == "/checks":
             if value and value not in {"required", "manual"}:
                 raise ValueError("Use /checks required or /checks manual")
@@ -722,8 +764,11 @@ class Terminal:
         """Attribute one completed request to the session, honestly."""
         self.session_model_requests += 1
         usage = response.get("usage") or {}
+        if not isinstance(usage, dict):
+            usage = {}
         keys = ("prompt_tokens", "completion_tokens", "total_tokens")
-        valid = all(isinstance(usage.get(key), int) and usage.get(key, 0) >= 0 for key in keys)
+        valid = all(isinstance(usage.get(key), int) and not isinstance(usage[key], bool)
+                    and usage[key] >= 0 for key in keys)
         if valid and usage["total_tokens"] >= usage["prompt_tokens"] + usage["completion_tokens"]:
             self.session_provider_tokens += usage["total_tokens"]
             self.session_input_tokens += usage["prompt_tokens"]
@@ -792,6 +837,7 @@ class Terminal:
             stream["md"].feed(chunk)
 
         self.spinner.start("thinking")
+        self._activity({"type": "model_start", "step": 1})
         try:
             started = time.monotonic()
             try:
@@ -802,6 +848,7 @@ class Terminal:
                     response = client.complete(messages, tools=None, max_tokens=1000)
             finally:
                 self._question_model_seconds = round(time.monotonic() - started, 3)
+            self._activity({"type": "model_end", "elapsed": self._question_model_seconds})
         except Exception as error:
             self.session_unknown_usage += 1
             self.spinner.stop()
@@ -817,6 +864,18 @@ class Terminal:
                                             render.error_hint(error), width, self.glyphs))
             return
         self.spinner.stop()
+        if isinstance(response, dict):
+            self.record_usage(response)
+            problem = response_problem(response)
+        else:
+            self.session_unknown_usage += 1
+            problem = "expected an object"
+        if problem:
+            if stream["md"] is not None:
+                stream["md"].finish()
+            message = "Invalid model response: " + problem
+            self._activity({"type": "agent_stopped", "message": message})
+            return message
         if stream["md"] is not None:
             stream["md"].finish()
             answer = "".join(parts)
@@ -825,7 +884,6 @@ class Terminal:
             if answer:
                 self.show_markdown(answer)
         self.gateway_state = "reachable"
-        self.record_usage(response)
         return answer
 
     def handle_input(self, line):
@@ -909,6 +967,9 @@ class Terminal:
     def handle_activity(self, event):
         """Render one honest agent event; no invented progress."""
         kind = event.get("type")
+        if kind == "agent_stopped":
+            self.say(render.warning(event["message"], self.width(), self.glyphs))
+            return
         if kind == "route":
             self.say(render.notice(f"Route: {event['profile']} · {event['verification']}",
                                    self.width(), self.glyphs))
@@ -938,6 +999,8 @@ class Terminal:
             self.spinner.stop()
             if event.get("baseline"):
                 state = "passing" if event.get("passed") else f"failing (exit {event.get('exit_code')})"
+                if event.get('cached'):
+                    state += " (cached from this session; not rerun)"
                 self.say(render.notice(f"baseline acceptance tests: {state}",
                                        self.width(), self.glyphs))
                 return
@@ -974,12 +1037,18 @@ class Terminal:
         workspace = workspace or self.workspace
         chunks = []
         for path, original in workspace.originals.items():
-            current = workspace.text(path)
+            deleted = path in workspace.deleted and not workspace.path(path).exists()
+            current = "" if deleted else workspace.text(path)
             created = original is None
+            if deleted:
+                if not created:
+                    chunks.append(deletion_diff(path, original, workspace.deleted_modes[path]))
+                continue
             chunks.extend(difflib.unified_diff(
                 "" if created else original.splitlines(keepends=True),
                 current.splitlines(keepends=True),
-                fromfile="/dev/null" if created else "a/" + path, tofile="b/" + path))
+                fromfile="/dev/null" if created else "a/" + path,
+                tofile="b/" + path))
         return "".join(chunks)
 
     def record_task(self, bill, text, started):
@@ -1015,8 +1084,64 @@ class Terminal:
         self.last_route = profile
         verification = ("manual checks · edits unverified" if self.test_policy == "manual" else
                         "baseline + post-edit acceptance checks") if profile == "coding" else "no acceptance tests"
+        if profile == "files":
+            verification = "bounded text files · no acceptance tests · edits unverified"
         self._activity({"type": "route", "profile": profile, "verification": verification,
                         "test_policy": self.test_policy})
+
+    def _baseline_key(self, runner):
+        """Conservative local unittest snapshot; no file contents or secrets read.
+
+        Generated run/history/bytecode directories and reference repos are excluded.
+        This is a short-lived local check, not evidence about external services.
+        Unknown commands, inaccessible paths and external directory symlinks disable reuse.
+        """
+        command = tuple(runner.test_command)
+        if len(command) < 3 or command[1:3] != ('-m', 'unittest'):
+            return None
+        try:
+            executable = Path(shutil.which(command[0]) or command[0]).resolve(strict=True)
+            identity = executable.stat()
+            entries = []
+            for directory, dirs, files in os.walk(self.repo, followlinks=False,
+                                                  onerror=lambda error: (_ for _ in ()).throw(error)):
+                dirs[:] = sorted(name for name in dirs if name not in
+                                 {'runs', '.miser', '__pycache__', 'opencode', 'aider'})
+                for name in dirs + sorted(files):
+                    path = Path(directory) / name
+                    info = path.lstat()
+                    if path.is_symlink() and path.is_dir():
+                        if not path.resolve().is_relative_to(self.repo):
+                            return None
+                    target = path.stat() if path.is_symlink() else info
+                    entries.append((str(path.relative_to(self.repo)), info.st_mode,
+                                    info.st_ino, info.st_size if not stat.S_ISDIR(info.st_mode) else 0,
+                                    info.st_mtime_ns if not stat.S_ISDIR(info.st_mode) else 0,
+                                    info.st_ctime_ns if not stat.S_ISDIR(info.st_mode) else 0,
+                                    target.st_ino, target.st_size if not stat.S_ISDIR(target.st_mode) else 0,
+                                    target.st_mtime_ns if not stat.S_ISDIR(target.st_mode) else 0,
+                                    target.st_ctime_ns if not stat.S_ISDIR(target.st_mode) else 0))
+                    if len(entries) > 100000:
+                        return None
+            return (command, runner.test_timeout, tuple(sorted(sanitised_env().items())),
+                    str(executable), identity.st_mtime_ns, identity.st_ctime_ns, tuple(entries))
+        except OSError:
+            return None
+
+    def baseline_tests(self, runner):
+        """Reuse only a stable passing baseline; explicit/post-edit tests stay fresh."""
+        key = self._baseline_key(runner)
+        cached = self._baseline_cache
+        if key is not None and cached and cached[0] == key and time.monotonic() - cached[1] < 300:
+            result = dict(cached[2], cached=True, elapsed_seconds=0)
+            runner.ledger.record('baseline_cache_hit', source='earlier passing baseline in this session')
+            return json.dumps(result)
+        self._baseline_cache = None
+        output = runner.invoke('run_tests', {})
+        result = json.loads(output)
+        if key is not None and result.get('passed') is True and self._baseline_key(runner) == key:
+            self._baseline_cache = (key, time.monotonic(), result)
+        return output
 
     def task(self, text):
         answer = "[Turn interrupted or failed; no completed answer.]"
@@ -1061,6 +1186,8 @@ class Terminal:
             return self.read_file_locally(text, *local_read)
         intent = classify_intent(text)
         profile = task_profile(text)
+        if self.task_mode == "files" and profile == "coding":
+            profile = "files"
         if intent.kind != "coding" and profile is None:
             self._select_route("conversation" if intent.response else
                                "question" if intent.kind == "question" else "clarification")
@@ -1096,13 +1223,15 @@ class Terminal:
         self.current_task = text
         approval = self.prompt_edit_approval if self.confirm_edits else None
         task_workspace = Workspace(self.repo)
-        mcp = MCPAccess(self.mcp_servers, ledger, approval=self.prompt_mcp_approval) if self.mcp_servers else None
+        task_workspace.deleted_modes.update(self.workspace.deleted_modes)
+        mcp = MCPAccess(self.mcp_servers, ledger, approval=self.prompt_mcp_approval) if self.mcp_servers and profile != "files" else None
         runner = ToolRunner(task_workspace, ledger, self.command, approval_callback=approval,
                             command_approval=self.prompt_command_approval, profile=profile,
                             clarification_callback=self.prompt_clarification,
                             use_project_memory=self.use_project_memory, mcp_access=mcp,
-                            test_policy=self.test_policy)
+                            test_policy=self.test_policy, deletion_approval=self.prompt_delete_approval)
         runner.recent_conversation = list(self.conversation_history[-6:])
+        runner.baseline_tests = lambda: self.baseline_tests(runner)
         started = time.monotonic()
         width = self.width()
         state = {"stream": None, "streamed": False}
@@ -1152,6 +1281,12 @@ class Terminal:
                 self.workspace.originals.setdefault(path, task_workspace.originals[path])
                 self.workspace.last_written[path] = task_workspace.last_written[path]
                 self.workspace.modified.add(path)
+                if path in task_workspace.deleted_modes:
+                    self.workspace.deleted_modes.setdefault(path, task_workspace.deleted_modes[path])
+                if path in task_workspace.deleted:
+                    self.workspace.deleted.add(path)
+                else:
+                    self.workspace.deleted.discard(path)
             try:
                 (directory / "patch.diff").write_text(self.last_diff, encoding="utf-8")
             except OSError:

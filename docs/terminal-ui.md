@@ -100,6 +100,65 @@ thread wakeups. `miser/tui/wakeup.py` probes that capability without binding a l
 and only on EPERM/EACCES adds a public-loop timer; normal hosts use normal wakeups.
 The timer also lets Markdown executor shutdown complete on this restricted host.
 
+## Home and conversation redesign (2026-11-10)
+
+Presentation-only pass over the existing native application; backend, routing,
+approvals, budgeting, streaming and command handling are untouched.
+
+- Header carries the MISER wordmark, a short descriptor, the active model with a
+  state dot, the shortened workspace path, known tokens and task count. Descriptor
+  and path drop out first as width shrinks; counters drop at the narrowest widths.
+- The welcome screen shows real workspace/model/check facts and usable command and
+  key hints. No fake controls or invented session state were added.
+- The session rail uses quiet left separators: SESSION with label/value rows and a live
+  status line, and RECENT ACTIVITY fed only by completed tool, test and task events
+  (newest first, four entries, cleared per process).
+- Semantic cards: accented user card, flat assistant response with label, compact
+  tool rows, error/system/file cards, and a result card with the existing usage
+  phrase and elapsed/receipt line.
+- Markdown rhythm is tightened: smaller heading margins, capped fence padding,
+  rounded code surfaces, styled horizontal scrollbar, and quiet quote/rule styles.
+  Tables, lists, links and inline code keep Textual's native rendering.
+- Diff cards keep collapsible syntax-highlighted patches with file name and +/−
+  counts; modal approvals now size to their content instead of a fixed 85% height,
+  and buttons use the restrained steel palette.
+- Layout adapts at 118 columns (rail hidden) and 96 columns (header counters hidden).
+  The rail is also hidden on the welcome screen at every width.
+
+### Welcome identity and transcript density follow-up
+
+The empty state now centers a five-row, 58-cell MISER wordmark in the available
+conversation area. It no longer shares that space with empty session panels or
+anchors itself to the bottom. Below 28 rows the secondary description is omitted
+so branding, real workspace facts and shortcut hints fit at 80×24. `/clear` restores
+this home layout without clearing backend context. The composer stays pinned.
+
+Routine backend notes retain their text as compact notices rather than repeated
+Workspace cards. Timing details remain available in expandable rows and `/timing`.
+The idle activity line is hidden; running work still has the existing live status.
+No backend behavior, prompts, tool policy, model requests or accounting was changed.
+
+Actual CLI terminal cells were captured and visually inspected at 80×24, 120×36
+and 160×45. Welcome captures submitted no prompts or model requests. Conversation,
+edit and approval captures use the simulated PTY provider with real backend actions;
+their token figures are simulated, not billing evidence. PNGs are rendered terminal
+cells rather than screenshots of a particular emulator:
+
+- [Welcome, 160×45](ui/identity-welcome-160x45.png)
+- [Welcome, 80×24](ui/identity-welcome-80x24.png)
+- [Completed task, simulated provider, 160×45](ui/identity-completed-160x45.png)
+
+Regressions in `tests/test_ui_identity.py` cover centering, the large wordmark,
+home/active/clear transitions, no welcome scrolling at 80–200 columns, compact
+notices and expandable timing. Existing rail breakpoint tests now explicitly
+distinguish home from active state; their active layout assertions are retained.
+
+Actual inspection used the CLI PTY capture path at 80×24, 120×36 and 160×45 and a
+160×45 approval frame. Frames were decoded with pyte and rendered to PNG for visual
+review; they are simulated-provider captures, not live model runs. The focused empty
+composer shows Textual's native block caret over the placeholder's leading `›`
+prompt glyph; that hides punctuation by design, not the first word.
+
 ## Verification and actual captures
 
 Baseline before this rebuild:
@@ -280,12 +339,10 @@ tool changes the policy. `/status` shows the setting. Manual mode can also leave
 code changes unverified, so use required mode for coding work. It is an explicit
 tradeoff, not automatic affected-test selection or a security sandbox.
 
-File deletion remains unsupported. Existing apply_patch only edits previously-read
-files; it cannot create/delete them. write_file creates a new file. Command limits
-were not expanded to provide rm or a workaround. The model instructions and patch
-schema now state this limitation explicitly; native tool errors display the actual
-bounded reason, rather than only a failure cross. A properly guarded deletion tool
-with undo/approval coverage remains separate next work.
+At that increment deletion was unsupported. It is now implemented by delete_file
+with fresh approval, recovery and undo; see [file operations](file-operations.md).
+apply_patch still edits existing files only. No rm/command workaround was added.
+Native deletion dialogs never offer approve-all; file-mode results say tests not run.
 
 The reported slow run `runs/session-d1203faa7bd1/ledger.json` was read from disk:
 status budget_exhausted, baseline 55.635s, six model events totalling 71.533s, and
@@ -323,3 +380,97 @@ local path validation, preserving that assertion. No checks were deleted or skip
 System Python without Textual and project Python with Textual 8.2.8 were checked
 separately; no system environment was changed. `git diff --check`, core `-S` help
 and reference/example diff exclusion passed. No live latency benchmark was run.
+
+## Charcoal theme and observable activity (2026-11-10)
+
+The current canvas is warm blackish charcoal (#141414), with neutral layered
+surfaces and muted cyan/steel-blue focus accents. Shared palette variables feed
+native Textual CSS and line-renderer styling. Conversation, code, diff, composer,
+sidebar and modal surfaces now use neutral charcoal instead of navy. A persistent
+ACTIVITY rail above the composer remains visible at narrow widths, showing actual
+model requests, source reads/edits, checks and approval waits. Ordinary questions
+also emit request start/end events; there are no additional model calls or billing
+changes. Tool paths are sanitized and bounded; arguments/content are not dumped.
+
+This is observable execution, not private chain-of-thought. The current client
+streams answer content/tool calls; it does not expose provider reasoning summaries.
+A future capability should use an explicit provider-supported summary channel in a
+collapsible panel, label it separately from verified actions, and avoid a second
+model request solely to manufacture a thinking display. No simulated thinking text
+or hidden model trace was added.
+
+Potential next UI improvements: collapsed completed tool groups, searchable history,
+a command palette, changed-file navigation and an optional compact sidebar. Preserve
+scroll position, source text and keyboard/cancellation behavior. Avoid giant banners,
+noisy multicolor panels and decorative output that competes with the conversation.
+
+Current CLI PTY captures (provider explicitly simulated):
+
+- [Charcoal 80×24](ui/charcoal-conversation-80x24.png)
+- [Charcoal 120×36](ui/charcoal-conversation-120x36.png)
+- [Charcoal 160×45](ui/charcoal-conversation-160x45.png)
+- [Charcoal approval](ui/charcoal-approval-80x24.png)
+- [Charcoal completed task](ui/charcoal-completed-160x45.png)
+
+These are rendered from actual terminal cells, not design mockups. The 80×24 and
+120×36 outputs were visually inspected. Existing native CLI PTY regression exercises
+all three sizes, actual keyboard/approval/edits/checks and exit with a scripted
+provider. No new live-provider or desktop-terminal screenshot claim is made.
+
+Baseline: 446 tests in 28.176s, OK. The new native theme/activity regression failed
+before implementation. Focused native/CLI/terminal rendering: 72 tests in 15.901s,
+OK. First full run: 447 in 25.219s, FAILED (one legacy cursor test hardcoded the old
+accent). Its assertion now uses the shared accent and still requires a visible
+cursor. An interim focused run errored because the updated test's theme import was
+missing; the import was added, and its targeted check passed. No tests skipped or
+cursor assertion weakened. Final rerun recorded below.
+
+Final charcoal/activity verification:
+
+```text
+PYTHONPATH=tests .venv/bin/python -m unittest test_tui_screen test_textual_app test_textual_pty test_ui_redesign test_terminal -q
+Ran 86 tests in 17.639s
+OK
+
+set -o pipefail; .venv/bin/python -m unittest discover -s tests -q
+Ran 447 tests in 32.424s
+OK
+```
+
+Whitespace and reference/example exclusion checks passed. Existing user cat-file
+changes were preserved. No commits, pushes, new dependencies or live provider calls.
+
+
+Latest identity/density verification (2026-11-10): baseline 464 tests in 31.998s OK;
+focused `test_ui_identity test_ui_review test_textual_app test_textual_pty`:
+35 tests in 30.826s OK; final full discovery: 467 tests in 49.008s OK. These runs
+use `.venv/bin/python -m unittest`, with `PYTHONPATH=tests` for named modules.
+No live model was called for visual verification. Other terminal emulators, fonts
+and subjective aesthetic acceptance remain unverified.
+
+
+## Message cards and baseline reuse follow-up
+
+User messages now use a steel-blue surface and a slim accent; assistant Markdown
+uses its own charcoal surface and inset padding. Both cap prose width at 110 cells
+while retaining the original source and native Markdown widgets. The real CLI PTY
+frames at 80×24, 120×36 and 160×45 were inspected with the simulated provider.
+[Message cards, simulated provider](ui/message-cards-160x45.png).
+
+Interactive coding sessions can reuse a stable passing baseline for up to five
+minutes. Reuse is labelled cached and recorded as `baseline_cache_hit`, not a new
+`tests` event. Fresh post-edit and explicit `/run` checks are unchanged. Cache state
+is process-local, never restored from a receipt or repository file. Only commands
+with `-m unittest` qualify. Failures, changing snapshots, inaccessible files and
+external directory symlinks disable reuse. A changed command, timeout, inherited
+sanitized environment, interpreter identity or scanned file metadata invalidates it.
+
+This snapshot reads metadata, not file contents. Generated runs/history/bytecode
+and the reference repos are excluded; it is not a guarantee for tests depending on
+those directories, external packages outside the workspace, clocks or remote
+services. Explicit `/run` always forces fresh checks when such dependencies matter.
+The measured metadata scan on this checkout was 0.124s; no live model or end-to-end
+speedup benchmark is claimed. Quoted `say/rephrase/paraphrase ... in a better way`
+requests now use the answer-only route, with no tools or automatic tests.
+
+Final verification for baseline reuse/message cards: `set -o pipefail; .venv/bin/python -m unittest discover -s tests -q` → **473 tests in 44.491s, OK**, exit 0. `git diff --check` clean; reference repositories unchanged. No live-provider benchmark.

@@ -8,14 +8,16 @@ provider availability or proof of security/model reliability.
 ## Start here
 
 - Repository: `/home/aman-kumar-sharma/Desktop/fresh-code`.
-- HEAD remains `6898ab5` on master. Substantial later work is **uncommitted**, including
-  new untracked source/tests/docs. Preserve it; do not reset, clean or overwrite it.
-- User files `cat.txt` and `config.json` are untracked: do not read, delete, overwrite
+- Implementation baseline is `c167faa` on main, clean before this increment.
+  This increment is uncommitted; preserve source/tests/docs and do not reset or clean.
+- User files `cat.txt` and `config.json`: do not read, delete, overwrite
   or stage them merely because the user showed a MISER task involving a cat file.
   Implement the capability using temporary fixtures instead.
-- Latest observed full suite: **430 tests in 81.431s, OK**. This handover update
-  changes documentation only; the suite was not rerun for it. Reproduce a baseline
-  before the next implementation, then red regression → focused run → full suite.
+- Latest observed full suite: **447 tests in 32.424s, OK** (charcoal/activity).
+  Its baseline was 446 in 28.176s; final focused UI/terminal/PTY run: 86/17.639s OK.
+  Previous file-workflow full suite: 446/25.650s OK. This increment
+  reproduced 430 in 24.859s; focused verification passed 235 in 21.928s. Reproduce
+  a baseline before the next implementation, then red regression → focused → full.
 - Python 3.12.3 here; requires-python >=3.11. Core dependencies remain empty. Optional
   `tui` uses Textual >=8.2.8,<9; optional `ui-test` supplies development-only pyte.
 - Prepared `.venv`: Textual 8.2.8, Rich 15.0.0, pyte 0.8.2. System `python3` has no
@@ -40,8 +42,8 @@ workspace's `.venv` to hide the interpreter difference.
   remain for legacy tests; there is no interactive CLI route to them.
 - Existing real backend remains `miser/terminal.py`, `agent.py`, `client.py`,
   `tools.py`, `workspace.py`, `execution.py`, `ledger.py`. No demo provider in production.
-- Default catalog is 19 tools. Inspect/research profiles expose 9/12 tools and
-  reject edits/tests/commands at dispatch. Coding retains all 19 by default.
+- Default catalog is 20 tools. Inspect/research profiles expose 9/12 tools and
+  reject edits/tests/commands at dispatch. Coding retains all 20 by default.
 - Explicit bounded file reads and exact previous-message recall are local: no
   model, shell or acceptance tests. Live recent history includes local and agent
   turns, bounded to six pairs; three pairs enter model context. `--resume` restores
@@ -73,60 +75,76 @@ and freshly approved commands remain explicit host test actions. `/checks requir
 restores the default; new sessions always start required. File/version/approval/
 command guards remain active. Do not let model output change this policy.
 
-The user showed a 130-second unsuccessful delete/create essay task. The on-disk
-`runs/session-d1203faa7bd1/ledger.json` reports baseline **55.635s**, six model events
-summing **71.533s**, budget_exhausted and failed apply_patch/run_command events.
-The screenshot shows HTTP 429 retry. That ledger does **not** retain exact failed
-arguments/error text; do not invent those details. Source independently confirms
-file deletion is unsupported. Native UI now displays actual bounded tool errors;
-model instructions explicitly forbid trying shell deletion workarounds.
+The user showed a 130-second unsuccessful delete/create task. The recorded run
+had 55.635s in baseline tests and 71.533s across six model events; exact failed tool
+errors/arguments were not retained. File deletion was unsupported then. It is now
+implemented with a smaller dedicated workflow, but the original user's files were
+not changed and that real-provider task has not been rerun.
 
-The user's exact delete/create request remains unresolved. Neither user cat file
-was changed by this implementation. Manual checks remove automatic test overhead
-only when selected; they do not solve unsupported deletion or provider throttling.
+## Implemented next increment: guarded deletion and file mode
 
-## Next implementation: guarded deletion
+Use `/files on` after launching/restarting the actual Textual CLI. It exposes seven
+tools: zoom, read_many, write_file, edit, edit_batch, delete_file, ask_user, with a
+shorter instruction prompt. It has no architect, commands, automatic tests, web/MCP
+or todos. Mutations are constrained in dispatch to .txt/.md/.rst, excluding
+requirements* and CMakeLists.txt; sensitive/test/path protections still apply.
+Read-only inspect/research routing is not upgraded to write access. Results are
+edited_unverified. `/files off` restores normal routing; `/checks required` restores
+verification separately if manual was previously selected. New sessions remain auto
+with required checks. File extensions do not prove edits irrelevant to application tests.
 
-This is the immediate capability gap. Implement it without relaxing shell policy.
-Inspect Workspace tracking, ToolRunner previews/dispatch, agent schemas, Terminal
-compute_diff/session aggregation/undo, and native approval handling before coding.
+Deletion requires prior safe read/current version and a distinct fresh approval,
+even when ordinary edit confirmation is off. No approve-all, headless auto-approval
+or shell workaround. Private recovery copies and original path/mode/version manifests
+are fsynced under `.miser/deleted/` before unlink; model paths cannot access them.
+Content/identity and cancellation are rechecked after staging. Backups survive undo
+and may remain after failed attempts; a backup is not proof deletion completed.
+Live undo restores bytes/mode and refuses external replacements. Resume does not
+reconstruct undo. ACLs, ownership, extended attributes and crash atomicity are not
+claimed preserved. Final filesystem races remain; this is not an OS sandbox.
 
-Acceptance contract for a first increment:
+Shared deletion diffs handle empty/no-final-newline files and original-name display;
+Git applicability is tested. WorkingMemory drops deleted versions across compaction
+and clears the tombstone when a file is recreated. The default catalog/audit is now
+20 tools, explicitly keeping delete_file outside parallel read-only batches.
 
-1. A dedicated, bounded file-deletion operation; no arbitrary shell, recursive
-   directory deletion or rm allowlist addition. Preserve sensitive/test-file guards.
-2. Prior safe read and exact current version required. Reject missing/nonregular
-   files, stale versions, traversal, symlinks and unsafe paths before mutation.
-   Preserve rechecks and document the residual syscall race honestly.
-3. Fresh explicit deletion approval, including when normal edit approvals are off;
-   no approve-all deletion, model-controlled approval or headless auto-approval.
-4. Accurate deletion diff and receipt/status. Keep enough original content/metadata
-   for safe `/undo`; restore only when doing so cannot overwrite external changes.
-   Handle empty files, modes, line endings, created-then-deleted files and session
-   aggregation across task workspaces. Do not turn an unrelated missing file into
-   an assumed authorized deletion.
-5. Cover rejection, cancellation, concurrent changes, undo conflicts, partial/mixed
-   failures and backup recovery. Define delete/create partial-failure behavior
-   honestly; do not claim multi-file crash atomicity.
-6. Unittest regressions fail before and pass after. Exercise the actual native CLI
-   with a clearly simulated provider and real temporary filesystem operations.
-   Update catalog/docs only after observing the new count and test results.
+See `docs/file-operations.md`, `tests/test_file_operations.py` and native regression
+coverage in `tests/test_textual_app.py`. Actual native CLI PTY at 120×36, provider
+simulated/live calls trapped: cancel/no writes, fresh approval without approve-all,
+delete/create in three requests, zero tests, unverified result, undo bytes/mode,
+clean exit. Scratch reproduction is /tmp/miser-files-pty.py (may not survive).
 
-## After deletion
+Local raw UTF-8/4 instruction/schema estimates: coding 775/1,910 (20 tools), files
+239/783 (7 tools). Dynamic context/framing omitted; not billing or live latency.
 
-1. Reduce file-task round trips/tool schemas. Use direct supplied paths and bounded
-   multi-reads where appropriate; avoid unnecessary search/planning. Any small-file
-   profile must enforce its allowed operations and paths in dispatch, not rely on
-   a model promise or silently treat code edits as verified documentation changes.
-2. Design verification selection/cache with complete invalidation of relevant
-   source, tests, command/config and environment inputs. Unknown state must not be
-   labelled cached passing. Do not silently switch users into manual mode.
-3. Measure a small deterministic task matrix: local read, question, new text file,
-   delete/create, actual bug fix, failed tests, 429/recovery and cancellation.
-   Compare calls, host durations and provider usage separately. Live tests optional;
-   if run, use `gemini/gemini-3.5-flash-lite` and label them real.
-4. Full conversation resume, live MCP interoperability, browser/UI verification and
-   budgeted delegated workers remain separate future work; do not claim parity.
+## Current UI/activity follow-up
+
+Theme is shared warm charcoal (#141414), with neutral surfaces and restrained
+cyan/steel accents. Persistent ACTIVITY rail shows actual model/tool/test/approval
+stages at narrow widths. Ordinary questions emit request lifecycle events too.
+This does not expose private thinking or add model calls. Provider-supported brief
+reasoning summaries would need a separate explicitly supported client callback and
+labelled collapsible UI; that feature is not implemented. See docs/terminal-ui.md
+and docs/ui/charcoal-*.png for actual simulated-provider CLI captures.
+
+The user also requested removal of token/tool-use limits. This remains pending;
+do not say limits were removed. Design optional host spending/step quotas separately
+from finite context windows, cancellation, process cleanup, command approvals and
+file protections. Avoid infinite retry loops or changing golden evaluation limits.
+
+## Next implementation queue
+
+1. Carefully invalidated verification selection/cache: source, tests, command/config
+   and environment changes must invalidate. Unknown state cannot be called cached
+   passing; no silent manual-policy switch. Required remains default for coding.
+2. Measure representative task/429/cancellation behavior with correct usage labels.
+   Live tests are optional; use gemini/gemini-3.5-flash-lite if run and label them real.
+   Do not promise a fixed response time or treat simulated call counts as live gains.
+3. Explicit host recovery retention/cleanup policy. Never let model tools erase
+   backups or automatically replay untrusted recovery manifests. Assess crash and
+   filesystem races separately from the existing live-session undo proof.
+4. Remaining read_many compaction, ledger durability, full conversation resume,
+   live MCP, browser verification and budgeted delegated workers are separate work.
 
 Safety work must not be displaced by cosmetic/features work: unresolved DNS/private
 network pinning and filesystem TOCTOU are the highest-risk audit boundaries. Also
@@ -144,8 +162,10 @@ python3 -S -m miser --help
 git diff --check
 ```
 
-Recorded for the last code increment: baseline 417/89.225s OK; targeted diagnostics
-16/1.149s OK; broad focused integration 166/79.541s OK; full 430/81.431s OK.
+Recorded for the last code increment: baseline 430/24.859s OK; broad focused
+235/21.928s OK; full 446/25.650s OK. First full attempt failed two assertions
+(catalog count and command-prefix collision); both were corrected without dropping
+checks. See docs/file-operations.md for red regressions and observed outputs.
 Do not present these as checks rerun by the next agent.
 
 - `tests/test_latency.py`: ten timing/manual-policy regressions.

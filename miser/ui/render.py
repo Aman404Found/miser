@@ -548,9 +548,14 @@ def test_result(event, glyphs=None):
 
 def diff_files(diff_text):
     files, current = [], None
+    original_path = ""
     for line in str(diff_text or "").splitlines():
+        if line.startswith("--- "):
+            original_path = line[4:].strip().removeprefix("a/")
         if line.startswith("+++ "):
             path = line[4:].strip()
+            if path == "/dev/null":
+                path = original_path
             if path.startswith("b/"):
                 path = path[2:]
             current = {"path": path, "added": 0, "removed": 0}
@@ -586,13 +591,18 @@ def render_diff(diff_text, width=None, max_lines=120, glyphs=None):
     out = []
     old_line = new_line = 0
     truncation = ""
+    original_path = ""
     for index, line in enumerate(raw_lines):
         if len(out) >= limit:
             remaining = len(raw_lines) - index
             truncation = theme.dim(f"  … {remaining} more diff lines")
             break
+        if line.startswith("--- "):
+            original_path = line[4:].strip().removeprefix("a/")
         if line.startswith("+++ "):
             path = line[4:].strip()
+            if path == "/dev/null":
+                path = original_path
             if path.startswith("b/"):
                 path = path[2:]
             stats = files.get(path, {"added": 0, "removed": 0})

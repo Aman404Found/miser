@@ -343,6 +343,7 @@ automation and delegated workers in the capability queue remain unimplemented.
 Implemented route/timing diagnostics and /timing. /checks manual is an opt-in host
 policy for skipping automatic tests/architect, with edited_unverified outcomes;
 /checks required remains default. Existing guards and evaluation thresholds remain.
-Next: guarded file deletion (currently unsupported), fewer file-task round trips,
-and carefully invalidated verification selection/cache. Provider 429 latency is
+Guarded file deletion and the bounded /files on workflow are now implemented; see
+[file-operation evidence](file-operations.md). Next: carefully invalidated verification
+selection/cache and live task-matrix measurements. Provider 429 latency is
 not solved by local timing or UI changes. See terminal-ui.md for verification.
