@@ -1,12 +1,144 @@
 # Implementation status
 
+Audit update (2026-11-09): baseline `6898ab5` reproduced at 249 tests; the audited
+working tree passes 290 tests. See [audit report](audit-report.md) for fixes and
+open risks. Counts and live-service statements below describe their recorded
+sessions, not current gateway availability or a security guarantee.
+
+## Timing and explicit manual checks (2026-11-10)
+
+Latest full suite: **430 tests in 81.431s, OK**. Chat displays selected route/check
+policy, actual check-running state and host duration summaries; `/timing` repeats
+latest-prompt diagnostics without model requests. Failed native tools now show their
+bounded error reason. Missing UI startup prints a complete project-venv command.
+
+`/checks manual` explicitly skips automatic tests/architect and removes run_tests;
+edits finish `edited_unverified`. `/checks required` restores default verification.
+No command/file guards are weakened. Real CLI PTY manual-mode verification used a
+simulated provider, actual temporary file creation, zero tests and clean exit.
+File deletion is still unsupported, and live speedup is not established. See
+[policy details and real check outputs](terminal-ui.md).
+
+## Native Textual application (2026-11-10)
+
+The actual interactive CLI now selects `miser.tui.textual_app.MiserApp`, a native
+Textual application. The optional `tui` extra now supplies Textual; core dependencies
+remain empty. The former row-rendered Rich application remains only for legacy
+compatibility tests and is not an interactive CLI route. Persistent native input,
+scrollable Markdown messages, responsive sidebar, streaming, modal approvals and
+real backend integration are implemented. Run `.venv/bin/python -m miser chat . --tui`.
+Final verification: 417 tests in 72.571s, OK, using `.venv/bin/python`.
+See [current UI verification and captures](terminal-ui.md). The Rich redesign notes
+below describe the earlier implementation, superseded by this native application.
+
+## Recent turns, rendering and local latency (2026-11-09)
+
+UI redesign follow-up: the existing optional Rich TUI now has a compact welcome,
+shared palette, charcoal user surfaces and persistent focus composer. Retained raw
+Markdown response blocks support rich formatting and resize reflow. Regression
+coverage fixes omitted non-streaming replies, merged model streams, lost repaint
+updates, cancellation waiting, Unicode input wrapping, full-row cursor visibility,
+miscolored failure status, unknown-usage labels and clipped diff tails. An actual
+PTY test exercises keyboard/streaming/resize/approval/real acceptance commands with
+scripted provider replies. See [UI evidence and limits](terminal-ui.md); older
+statements below describe the pre-redesign checks.
+
+- Root cause: only `answer_question` saved conversation pairs. Local file reads and
+  coding/inspection tasks were absent, so a later question saw an older user turn.
+  The shared task entry now records every non-slash turn in both line and TUI
+  routes, including interrupted/failed turns. Agent outcomes use `agent_message`
+  when available, otherwise an explicit status/file summary, never replayed tools.
+- Exact previous-message queries are answered locally. Other questions and task
+  loops receive the latest three bounded pairs as history/context. At most six
+  pairs / 12,000 serialized UTF-8 bytes are retained; each message is capped at
+  1,500 UTF-8 bytes plus an explicit truncation marker. New instances start empty;
+  resume restores metrics, not a full conversation. This does not change profiles,
+  command approvals or file guards. No automatic cross-session learning is claimed.
+- The screenshot's four-line read wording now matches the guarded local route;
+  a compound edit suffix still cannot be consumed as a file display. A single
+  synthetic-file smoke measured 11.456 ms for that read and 0.057 ms for previous
+  message recall, with zero model requests. These are local observations, not
+  provider latency benchmarks or guaranteed timings.
+- Fixed clipped code lines, a closing streamed fence printed as backticks, ANSI/
+  wide-character wrapping, overlong headings/model labels, adjacent turn spacing,
+  and TUI transcript cropping on resize. Scroll offsets count wrapped rows.
+  Repaints reflow only a sufficient transcript suffix, not the entire session.
+  Unicode handling uses codepoint/cell widths, not full emoji-grapheme shaping.
+- Streaming and independent read-only parallel batches already existed and remain
+  enabled. Provider-side prompt caching is not newly implemented or verified.
+  Further provider latency work needs real first-token/request/retry measurements
+  and documented gateway cache support; do not claim speedups from simulated calls.
+
+## External MCP tools (2026-11-09)
+
+- Opt-in HTTP tools-only client in `miser/mcp.py`; explicit external host config,
+  read-only tool allowlists and fresh per-call approval. No subprocess server
+  launches, inline credentials, auto-discovered config, retries or new dependencies.
+- Adds two generic tools only when configured; selected schemas become 11/14/21.
+  MCP tools never enter parallel batches. Headless discovery is allowed; calls
+  require an interactive approval channel. Remote metadata/results are untrusted
+  tool data. Host classification does not prove service behavior or provide an OS sandbox.
+- Bounded JSON/SSE, explicit 2026-07-28 or 2025-11-25 protocol pin, legacy session
+  cleanup, credential redaction and metadata-only ledger events. RPC success is
+  distinct from unknown service charges. See [scope and setup](mcp.md).
+- Deterministic fake-transport coverage only; no live server, Meko connection or
+  model-driven MCP run verified. TUI shutdown also releases pending edit approvals.
+- Readiness follow-up: catalog size budgeting now reserves omitted names (a
+  regression reproduced 10,105 bytes against the 10,000-byte cap). A two-call
+  agent integration test checks fresh approvals, cached discovery and sequential
+  execution without constructing parallel workers. Latest full suite: 378 OK.
+
+## Persistent project knowledge (2026-11-09)
+
+- New `miser/knowledge.py` stores explicitly host-saved facts under ignored
+  `.miser/project-knowledge.json`. `/remember [--path PATH] FACT`, `/memory`,
+  `/forget ID` and CLI `memory REPO ...` work without a model. On/off persists;
+  clear is explicit. This does not automatically import the development memory.md.
+- At most 20 facts of 400 characters; at most 8 whole facts / 3,000 serialized
+  UTF-8 bytes enter a task-start snapshot. Facts are untrusted data in user/state
+  context, never system instructions. Current task/tool profile remains unchanged.
+  Normal context diagnostics include these bytes; there is no extra model call or
+  fabricated provider usage. General conversation can load the same bounded data.
+- Linked source hashes exclude changed/missing/unsafe files. Version checks use
+  bounded regular UTF-8 reads, directory-relative opens and no-follow access;
+  FIFOs/symlinks are not followed or waited on. Facts are not semantic proof.
+- POSIX writer locking, private file modes, atomic replacement and fsync protect
+  store updates. No cross-platform or power-loss certification is claimed. Model
+  tools cannot save/overwrite this host store. Credential refusal checks configured
+  keys and obvious assignments, not every possible secret. Labels do not establish
+  model injection resistance. Corrupt stores fail closed; --no-memory bypasses
+  loading and explicit clear allows recovery.
+- Deterministic coverage includes fresh instances, repository isolation, bounded
+  Unicode context, stale source/symlink/FIFO behavior, concurrent host saves,
+  replacement failure, corrupt/nested input, secret refusal and CLI/slash routes.
+
+## Capability profiles and clarification (2026-11-09)
+
+- The catalog now has 19 tools with `ask_user`. Inspect/research/coding expose
+  9/12/19 schemas; the dispatcher enforces that same selected set. Read-only loops
+  skip acceptance/architect calls, read actual repository evidence and cannot edit,
+  execute commands or run tests. Research alone adds the existing web tools to the
+  read-only profile. Coding keeps the existing verification and approval policy.
+- Explicit file reads still use the earlier zero-model route. Other task profiles
+  are inferred from the user request, not repository/model text. Inference is a
+  heuristic; headless CLI `--profile inspect|research` enforces a host-selected
+  read-only boundary. Coding still requires a fixed acceptance command.
+- `ask_user` supports a bounded question and optional choices, with three prompts
+  per task. A live line/TUI answer resumes the same loop. Mixed question/action
+  batches are refused; no channel or a declined answer stops as `needs_input` and
+  surfaces the question. Piped and batch/--exec sessions never prompt. Raw answers
+  are not persisted by clarification events (later model answers can repeat them).
+- Source protection and shell allowlists were not relaxed. Verification uses
+  scripted models, real temporary source files, and simulated TUI key events. No
+  live provider cost, latency or remote-service correctness claim follows.
+
 ## Golden-task evaluation (Phase 7)
 
 - The evaluation harness was already in place (`miser/evaluation.py`,
   `miser evaluate --demo python|javascript`), so Phase 7 recorded real runs instead of
   adding harness code. Each run copies `examples/<lang>_bug` into an absent output
   directory, drives the real agent loop against the configured gateway, and writes
-  `ledger.jsonl` plus `report.json` with turns, model calls, tool calls, test runs,
+  `ledger.json` plus `report.json` with request/tool/test events,
   provider-reported tokens and wall clock.
 - Three runs used the real CLI and the real gateway with complete provider usage
   (`usage_complete: true`, `failed_model_requests: 0`, no compactions, no fallbacks):
@@ -21,7 +153,7 @@
   apart. The default-budget run spent all four calls on orientation (`find_files`, two
   `zoom` reads, `write_todos`) and ended before any edit.
 - The measured finding is that the fixed golden limits (`max_model_calls: 4`,
-  `max_provider_tokens: 6,000`) are unreachable with this model and tool surface, so
+  `max_provider_tokens: 6,000`) were not reached in these measured runs, so
   `golden_tasks_passed: 0` and `miser evaluate` exits 1 even on solved tasks. That is
   the grader working correctly, not a harness defect: a 15,000-token solve is not a
   golden pass under a 6,000-token ceiling.
@@ -46,7 +178,7 @@
   edits, `run_tests`, `run_command`, `verify_claim`, `write_todos`, malformed
   arguments — keeps the sequential path, so no write ever races another write.
 - Ordering is preserved: starts are emitted on the calling thread in model order,
-  results arrive through `as_completed` (activity only), and tool messages, memory
+  completions arrive through `as_completed`, activity results are buffered into model order, and tool messages, memory
   observations and the early-exit test check are emitted zipped back into model call
   order. A `tool_batch` ledger event records the tools and whether the batch ran in
   parallel; `receipt()` sums only known event kinds, so it is unaffected.
@@ -137,12 +269,13 @@
   and version-added note of `Path.read_text` from
   `https://docs.python.org/3/library/pathlib.html`, with instructions not to answer
   from memory. It used 4 model requests and 4 tool calls for 18,777 provider tokens,
-  and the recorded `agent_message` cites the fetched URL with
-  `Path.read_text(encoding=None, errors=None, newline=None)`, "Added in version 3.5",
-  and the 3.10 `newline` addition.
-- Still pending: the injected-instruction half of the acceptance sentence. It needs a
-  fixture HTTP server and this host cannot bind sockets, so it is covered by unit
-  tests only.
+  and the recorded answer was reported to cite the fetched URL. This is evidence
+  of retrieval, not answer correctness: the earlier claim that `read_text` gained
+  `newline` in 3.10 is contradicted by this host's Python 3.12.3 signature, which
+  has only `encoding` and `errors`. No semantic correctness claim is established.
+- Still pending: proving that a model ignores injected instructions. Existing unit
+  tests assert untrusted labels and returned text, not model behavior. This host
+  cannot bind local listeners; simulated transport tests require no listener.
 
 ## Planning and progress update (Phase 4)
 
@@ -150,8 +283,8 @@
   rewrites the whole ordered list on each call; the runner rejects a call whose
   arguments are not exactly `{"todos"}`, and the list is validated before it
   replaces the previous one, so a bad update leaves the old plan intact.
-- Limits: at most 20 items, 200 characters per task, at most one item marked
-  `in_progress` at a time. Each accepted update bumps a `revision`.
+- Limits: at most 20 items, 200 characters per task, with `{task, completed}`
+  fields; there is no `in_progress` state. Each accepted update bumps a `revision`.
 - The plan is re-injected into every prompt as `state["todos"]`, so it is in context
   even when the model does not repeat it. If a turn did tool work without
   re-emitting the list, the host attaches a `plan_reminder` and increments
@@ -175,9 +308,10 @@
   `git status`, `git diff`. Anything else is refused with a clear message.
 - Any shell metacharacter in any argument (`; & | < > $ ` \n \r ( )`) is refused
   before execution.
-- Each invocation is shown for approval: yes (once), no, or always for that exact
-  argv, which then runs silently for the rest of the session. The child process gets
-  only a small allowlisted environment, so `.env` credentials never reach it.
+- Each invocation needs fresh approval: yes or no. The earlier exact-argv "always"
+  cache was removed during the audit. The child process gets only a small allowlisted
+  environment; gateway/search credential variables are not forwarded. Repository
+  code can still read credentials from disk: this is not an OS sandbox.
 - stdout, stderr and the real exit status are returned unchanged; a non-zero exit is
   a result, not an exception.
 - `background=true` starts a job with a log file under `.miser/jobs/`; `action=status`
@@ -305,12 +439,13 @@ The user requested language flexibility. File search/read/edit and fixed accepta
 
 ### Phase 1 — atomic multi-file changes and a unified diff engine
 
-- `Workspace.edit_batch` applies 1–10 exact replacements across files as one transaction:
-  every snapshot, version, and match is validated in memory before any write, and a failed
-  write restores the pre-batch contents of every file it touched.
+- `Workspace.edit_batch` applies 1–10 exact replacements across files: every snapshot,
+  version, and match is validated and contents/backups staged before replacement.
+  Replacement is atomic per file; multi-file rollback is best effort and incomplete
+  rollback is explicitly reported with retained backup paths. No crash-atomic claim.
 - `Workspace.apply_unified_diff` parses standard git-style hunks (counts validated,
   `/dev/null` creation/deletion refused, `\ No newline at end of file` honoured), verifies
-  each hunk against the current text, and writes all files through the same atomic transaction.
+  each hunk against the read snapshot, and uses the same staged replacement path.
 - Tools `edit_batch` and `apply_patch` are exposed to the model next to `edit`; acceptance
   test paths are guarded for every path in a batch, approval prompts preview each file, and
   `ToolRunner` records cumulative diff previews plus an `edit` ledger event.
@@ -368,17 +503,17 @@ The user requested language flexibility. File search/read/edit and fixed accepta
 - `docs/benchmark-results.md` holds the method, the recorded attempt, and the still-empty
   before/after table. **No golden run has passed on this machine**: Bifrost was not
   listening on `localhost:8080`, so the recorded attempt stopped at `model_error` with
-  unknown usage and zero provider tokens. That is a blocked live check, not a result.
+  unknown usage and zero known recorded tokens. That does not prove zero remote
+  spending; it is a blocked live check, not a successful result.
 
-## Not yet validated live
+## Live evidence and remaining gaps
 
-The user's shared live receipt confirms Gemini calls through Bifrost with usage
-accounting; that run stopped at budget exhaustion after an edit, before verification.
-The host-driven verification change addresses this flow and needs a fresh live test.
-Tavily remains unvalidated live. During this work the local gateway was not listening,
-so no live model, fallback, compaction-quality, or Tavily call has been validated here.
-Local protocol tests cannot establish provider compatibility, fallback behaviour against a
-real 429, or summary quality.
+The earlier gateway-unavailable notes are historical. The audit found the recorded
+smoke solve (8,948 tokens), three golden attempts, and a web session (18,777 tokens,
+3 web calls, legacy `incomplete` status) on disk. No new live calls were made in
+the audit. Gateway availability, model injection resistance, fallback behavior
+against real remote failures, compaction quality and comparative efficiency are
+not established by the deterministic suite.
 
 ## Deferred from master plan
 

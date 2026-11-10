@@ -1,4 +1,5 @@
 import tempfile
+import os
 import unittest
 from pathlib import Path
 
@@ -119,15 +120,15 @@ class WorkspaceTests(unittest.TestCase):
         price_version = self.workspace.zoom("price.py")["version"]
         caller_version = self.workspace.zoom("caller.py")["version"]
         before_price = self.workspace.text("price.py")
-        original_write = Path.write_text
+        original_replace = os.replace
         real_path = self.root / "caller.py"
 
-        def failing_write(path_self, *args, **kwargs):
-            if path_self == real_path:
+        def failing_replace(source, target):
+            if target == real_path:
                 raise OSError("disk full")
-            return original_write(path_self, *args, **kwargs)
+            return original_replace(source, target)
 
-        Path.write_text = failing_write
+        os.replace = failing_replace
         try:
             with self.assertRaisesRegex(RuntimeError, "rolled back"):
                 self.workspace.edit_batch([
@@ -135,7 +136,7 @@ class WorkspaceTests(unittest.TestCase):
                     {"path": "caller.py", "old": "cost(10)", "new": "cost(20)", "expected_version": caller_version},
                 ])
         finally:
-            Path.write_text = original_write
+            os.replace = original_replace
         self.assertEqual(self.workspace.text("price.py"), before_price)
         self.assertEqual(self.workspace.modified, set())
 

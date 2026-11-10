@@ -87,7 +87,7 @@ class TerminalTests(unittest.TestCase):
             self.assertIn("ambiguous", "\n".join(output).lower())
             self.assertIsNone(terminal.last_ledger)
 
-    def test_question_answered_without_tools_or_test_execution(self):
+    def test_conversation_answered_without_tools_or_test_execution(self):
         with tempfile.TemporaryDirectory() as root:
             output = []
             class QuestionClient:
@@ -97,7 +97,7 @@ class TerminalTests(unittest.TestCase):
             terminal = Terminal(root, model="fixture/model", test_command="exit 1",
                                 write=output.append,
                                 client_factory=lambda _: QuestionClient())
-            terminal.handle_input("What does discounted_price do?")
+            terminal.handle_input("How are you?")
             self.assertIn("It calculates discounts.", "\n".join(output))
             self.assertIsNone(terminal.last_ledger)
 
@@ -243,7 +243,7 @@ class TerminalTests(unittest.TestCase):
                                       "total_tokens": 15}}
             terminal = Terminal(root, model="fixture/model", write=lambda _: None,
                                 client_factory=lambda _: UsageClient())
-            terminal.handle_input("What does discounted_price do?")
+            terminal.handle_input("How are you?")
             self.assertEqual(terminal.session_provider_tokens, 15)
             self.assertEqual(terminal.session_model_requests, 1)
             self.assertEqual(terminal.session_unknown_usage, 0)
@@ -256,7 +256,7 @@ class TerminalTests(unittest.TestCase):
             output = []
             terminal = Terminal(root, model="fixture/model", write=output.append,
                                 client_factory=lambda _: NoUsageClient())
-            terminal.handle_input("What does pricing.py do?")
+            terminal.handle_input("How are you?")
             terminal.slash("/usage")
             text = "\n".join(output)
             self.assertEqual(terminal.session_unknown_usage, 1)
@@ -276,7 +276,7 @@ class TerminalTests(unittest.TestCase):
             output = []
             terminal = Terminal(root, model="fixture/model", write=output.append,
                                 client_factory=lambda _: StreamingClient())
-            terminal.handle_input("What does pricing.py do?")
+            terminal.handle_input("How are you?")
             text = "\n".join(output)
             self.assertIn("The", text)
             self.assertIn("answer", text)
@@ -367,7 +367,7 @@ class TerminalTests(unittest.TestCase):
 
             terminal = Terminal(root, model="fixture/model", write=output.append,
                                 client_factory=lambda _: Offline())
-            terminal.handle_input("What does pricing.py do?")
+            terminal.handle_input("How are you?")
             text = "\n".join(output)
             self.assertIn("could not reach the model", text)
             self.assertIn("Start the gateway", text)

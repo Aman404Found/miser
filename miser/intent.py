@@ -11,7 +11,7 @@ from typing import Optional, Set
 
 @dataclass(frozen=True)
 class IntentResult:
-    kind: str  # "greeting", "acknowledgement", "help", "ambiguous", "question", "coding"
+    kind: str  # greeting, acknowledgement, help, ambiguous, question, file_read, coding, command
     reason: str
     response: Optional[str] = None
     clarification: Optional[str] = None
@@ -105,8 +105,78 @@ DECLARATIVE_CODING_PATTERNS = [
 ]
 
 
+# Full-match only: compound requests must retain the normal task path rather
+# than silently dropping an instruction after the file name. These are local
+# display requests, never shell commands or model-generated file selections.
+_READ_PATH = r'''(?P<path>"[^"\n]+"|'[^'\n]+'|[^\s"'`;:&|<>$(){}\[\]!?]+)'''
+_READ_PREFIX = r"(?:please\s+)?(?:can you\s+)?(?:read|show|print|display)\s+"
+_FIRST_LINES = r"(?P<first>(?:the\s+)?first\s+(?:(?P<count>\d+)\s+lines?|line))"
+_LOCAL_READS = (
+    re.compile(r"(?:i want you to\s+)?(?:please\s+)?read\s+(?P<count>\d+)\s+lines?\s+from\s+"
+               + _READ_PATH + r"(?:\s+file)?\s+and\s+(?:then\s+)?print\s+(?:here|them here)[?.!]?", re.I),
+    re.compile(_READ_PREFIX + _READ_PATH + r"(?:\s+file)?"
+               + r"(?:\s+and\s+(?:print|show|display)\s+" + _FIRST_LINES + r")?[?.!]?", re.I),
+    re.compile(_READ_PREFIX + _FIRST_LINES + r"\s+(?:of|from)\s+"
+               + _READ_PATH + r"(?:\s+file)?[?.!]?", re.I),
+)
+
+
+def parse_file_read(text: str) -> tuple[str, int] | None:
+    """Recognize a literal bounded file-display request; no inferred coding task."""
+    if text.strip().lower().rstrip("?.!") in HELP_PHRASES:
+        return None
+    for pattern in _LOCAL_READS:
+        match = pattern.fullmatch(text.strip())
+        if match:
+            path = match["path"]
+            quoted = path.startswith(('"', "'"))
+            path = path[1:-1] if quoted else path.rstrip(".?!")
+            count = int(match["count"]) if match["count"] else (
+                1 if match["first"] else 120)
+            return path, count
+    return None
+
+
+def task_profile(text: str) -> str | None:
+    """Choose capabilities from the user's request, never repository/model text.
+
+    Advice/questions stay read-only. Explicit change requests retain acceptance
+    verification, including an edit delegated after an explanation or review.
+    """
+    intent = classify_intent(text)
+    if intent.kind not in {"coding", "question"}:
+        return None
+    web = re.search(r"https?://|\b(?:look up|search online|search the web|official documentation|official docs)\b", text, re.I)
+    if re.search(r"\bread[- ]only\b|\b(?:do not|don't|without)\s+(?:edit|chang|modif|writ)\w*\b", text, re.I):
+        return "research" if web else "inspect"
+    mutations = CODING_ACTIONS - {"inspect", "examine", "explore", "review", "scan", "check"}
+    verbs = "|".join(sorted(mutations))
+    if re.search(r"(?:\b(?:and|then)\b|[,;])\s*(?:please\s+)?(?:" + verbs + r")\b", text, re.I):
+        return "coding"
+    # Inspection's subject can mention edit/delete/etc. Those words are evidence
+    # to inspect, not authorization to mutate. A delegated change after a
+    # conjunction was handled above.
+    inspecting = re.match(
+        r"\s*(?:please\s+)?(?:(?:can|could|would) you\s+)?(?:please\s+)?"
+        r"(?:inspect|examine|explore|review|scan|check|read|find|locate|search|list|summarize)\b", text, re.I)
+    if inspecting:
+        return "research" if web else "inspect"
+    if intent.kind == "coding" and re.search(r"(?<![\w./-])(?:" + verbs + r")(?![\w./-])", text, re.I):
+        return "coding"
+    if web:
+        return "research"
+    if intent.kind == "coding":
+        return "coding"
+    repository_question = re.search(
+        r"\b(?:code|repo|repository|function|class|method|module|test|tests|bug|pricing|discount)\b"
+        r"|\b\w+\.\w+\b|\b\w+_\w+\b", text, re.I)
+    if repository_question:
+        return "inspect"
+    return "coding" if intent.kind == "coding" else None
+
+
 def classify_intent(text: str) -> IntentResult:
-    """Classify user input into greeting, acknowledgement, help, ambiguous, question, or coding."""
+    """Route literal file reads, conversation, clarification and coding requests."""
     raw = text.strip()
     if not raw:
         return IntentResult(
@@ -117,6 +187,9 @@ def classify_intent(text: str) -> IntentResult:
 
     if raw.startswith("/"):
         return IntentResult(kind="command", reason="Slash command")
+
+    if parse_file_read(raw) is not None:
+        return IntentResult(kind="file_read", reason="Explicit local file display; no model or tests required")
 
     text_lower = raw.lower()
     cleaned = re.sub(r"[^\w\s]", " ", text_lower).strip()

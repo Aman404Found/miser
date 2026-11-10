@@ -27,23 +27,24 @@ class WelcomeLayoutTests(unittest.TestCase):
         self.assertEqual(len(lines), 32)
         self.assertTrue(all(line.cell_len == 100 for line in lines))
 
-    def test_logo_and_composer_are_centered(self):
+    def test_compact_branding_and_composer_share_the_workspace_column(self):
         lines = screen.render(welcome())
         logo_rows = [line for line in lines if "█" in line.plain]
-        self.assertEqual(len(logo_rows), 5)
-        lefts = {len(row.plain) - len(row.plain.lstrip(" ")) for row in logo_rows}
-        self.assertEqual(len(lefts), 1)
-        self.assertLessEqual(abs(100 - 38 - 2 * lefts.pop()), 1)
+        self.assertEqual(logo_rows, [])
+        self.assertTrue(lines[0].plain.lstrip().startswith("MISER"))
+        self.assertIn("Ready when you are", lines[2].plain)
 
         composer_rows = [line for line in lines if "▌" in line.plain]
-        self.assertGreaterEqual(len(composer_rows), 3)
+        self.assertEqual(len(composer_rows), 1)
+        self.assertTrue(any("╭" in row.plain for row in lines[-5:]))
+        self.assertTrue(any("Ctrl+J newline" in row.plain for row in lines[-5:]))
         for row in composer_rows:
             self.assertEqual(len(row.plain) - len(row.plain.lstrip(" ")), screen.content_left(100))
 
 
     def test_welcome_contains_identity_placeholder_model_and_shortcuts(self):
         text = "\n".join(line.plain for line in screen.render(welcome()))
-        self.assertIn("█", text)
+        self.assertNotIn("████", text)
         self.assertIn("focused coding agent", text)
         self.assertIn("Ask anything", text)
         self.assertIn("gemini/gemini-3.5-flash", text)
@@ -72,10 +73,10 @@ def leading_spaces(line):
 
 class ContentColumnTests(unittest.TestCase):
     def test_content_column_is_capped_and_centered(self):
-        self.assertEqual(screen.content_width(100), 92)
-        self.assertEqual(screen.content_width(80), 72)
+        self.assertEqual(screen.content_width(100), 96)
+        self.assertEqual(screen.content_width(80), 76)
         self.assertEqual(screen.content_width(40), 38)
-        self.assertEqual(screen.content_left(100), 4)
+        self.assertEqual(screen.content_left(100), 2)
         self.assertEqual(screen.content_left(40), 1)
         self.assertEqual(screen.content_width(200), screen.MAX_CONTENT_WIDTH)
 

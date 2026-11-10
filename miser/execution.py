@@ -42,10 +42,6 @@ MAX_ARG_LENGTH = 500
 OUTPUT_CAP = 8000
 MAX_JOBS = 8
 
-# Background jobs live for one process. Job ids are reported honestly as unknown
-# after the hosting process restarts, even though their log files persist.
-_JOBS = {}
-
 
 def format_command(argv):
     """Display form for logs and approval prompts. Never executed."""
@@ -57,6 +53,23 @@ def sanitised_env():
     env = {k: v for k, v in os.environ.items() if k in SAFE_ENV_KEYS}
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     return env
+
+
+def wait_for_process(process, timeout, cancelled=None):
+    """Poll cancellable UI work; a plain CLI keeps subprocess's ordinary wait."""
+    if cancelled is None:
+        return process.wait(timeout=timeout)
+    deadline = time.monotonic() + timeout
+    while True:
+        if cancelled():
+            raise KeyboardInterrupt
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(process.args, timeout)
+        try:
+            return process.wait(timeout=min(0.1, remaining))
+        except subprocess.TimeoutExpired:
+            continue
 
 
 def _normalise_program(name):
@@ -85,6 +98,8 @@ def check_argv(argv, allowlist=None):
             shown = " ".join(repr(character) for character in bad)
             raise ValueError(
                 f"Shell metacharacter(s) {shown} are not allowed; pass argv entries literally")
+    if "/" in argv[0] or "\\" in argv[0]:
+        raise ValueError("Executable must be an allowlisted program name, not a path")
     rules = DEFAULT_ALLOWLIST if allowlist is None else tuple(tuple(rule) for rule in allowlist)
     normalised = [_normalise_program(argv[0])] + list(argv[1:])
     for rule in rules:
@@ -109,7 +124,8 @@ class CommandSupervisor:
         self.max_runs = max(1, int(max_runs))
         self.max_jobs = max(1, int(max_jobs))
         self.runs = 0
-        self.always_allowed = set()
+        self.jobs = {}
+        self.cancelled = None
         self.jobs_dir = os.path.join(str(self.workspace.root), ".miser", "jobs")
 
     # -- helpers -----------------------------------------------------------
@@ -118,22 +134,17 @@ class CommandSupervisor:
         """Resolve the executable ourselves; never let argv[0] pick a path."""
         if _normalise_program(program) == "python3":
             return sys.executable
-        resolved = shutil.which(program)
+        resolved = shutil.which(os.path.basename(program))
         if not resolved:
             raise ValueError(f"Command not found on PATH: {program}")
         return resolved
 
     def _approve(self, argv, display):
-        key = tuple(argv)
-        if key in self.always_allowed:
-            return
         if self.approval_callback is None:
             raise ValueError(
                 "No approval channel is available, so commands cannot run in this mode")
         answer = self.approval_callback(display)
-        if answer == "always":
-            self.always_allowed.add(key)
-        elif not answer:
+        if not answer:
             raise ValueError("Command rejected by user")
 
     def _read_log(self, path):
@@ -149,10 +160,10 @@ class CommandSupervisor:
     def _terminate(process):
         """Stop the command, and its process group where the host supports it."""
         killpg = getattr(os, "killpg", None)
-        getpgid = getattr(os, "getpgid", None)
-        if killpg is not None and getpgid is not None:
+        if killpg is not None:
             try:
-                killpg(getpgid(process.pid), signal.SIGKILL)
+                # start_new_session makes pid the group id, even after its leader exits.
+                killpg(process.pid, signal.SIGKILL)
                 return
             except (ProcessLookupError, PermissionError, OSError):
                 pass
@@ -164,6 +175,7 @@ class CommandSupervisor:
     # -- actions -----------------------------------------------------------
 
     def run(self, argv, background=False):
+        argv = check_argv(argv, self.allowlist)
         display = format_command(argv)
         if self.runs >= self.max_runs:
             raise ValueError(f"Command-run limit reached ({self.max_runs} per task)")
@@ -181,11 +193,18 @@ class CommandSupervisor:
                                        **({"start_new_session": True} if os.name == "posix" else {}))
             timed_out = False
             try:
-                process.wait(timeout=self.timeout)
+                wait_for_process(process, self.timeout, self.cancelled)
             except subprocess.TimeoutExpired:
                 timed_out = True
                 self._terminate(process)
                 process.wait()
+            except BaseException:
+                self._terminate(process)
+                process.wait()
+                raise
+            # A successful group leader can still leave children holding the log.
+            if not timed_out:
+                self._terminate(process)
             size = output.tell()
             output.seek(max(0, size - OUTPUT_CAP))
             text = output.read(OUTPUT_CAP).decode("utf-8", errors="replace")
@@ -197,7 +216,7 @@ class CommandSupervisor:
         return result
 
     def _run_background(self, argv, resolved, display, started):
-        active = [job for job in _JOBS.values() if job["process"].poll() is None]
+        active = [job for job in self.jobs.values() if job["process"].poll() is None]
         if len(active) >= self.max_jobs:
             raise ValueError(f"Background job limit reached ({self.max_jobs} running)")
         os.makedirs(self.jobs_dir, exist_ok=True)
@@ -208,7 +227,7 @@ class CommandSupervisor:
             process = subprocess.Popen([resolved] + list(argv[1:]), cwd=self.workspace.root,
                                        env=sanitised_env(), stdin=subprocess.DEVNULL,
                                        stdout=log, stderr=subprocess.STDOUT, **spawn)
-        _JOBS[job_id] = {"process": process, "log": log_path, "command": display,
+        self.jobs[job_id] = {"process": process, "log": log_path, "command": display,
                          "started": started}
         self.ledger.record("command", command=display, background=True, job_id=job_id)
         return {"job_id": job_id, "command": display, "running": process.poll() is None,
@@ -216,13 +235,9 @@ class CommandSupervisor:
                 "hint": "Call run_command with action=status and this job_id for output."}
 
     def status(self, job_id):
-        job = _JOBS.get(job_id)
+        job = self.jobs.get(job_id)
         if job is None:
-            known = os.path.join(self.jobs_dir, f"{job_id}.log")
-            if not os.path.isfile(known):
-                raise ValueError(f"Unknown job id: {job_id}")
-            return {"job_id": job_id, "running": False, "exit_code": None,
-                    "output": self._read_log(known)[0], "command": "(unknown; process restarted)"}
+            raise ValueError(f"Unknown job id: {job_id}")
         output, truncated = self._read_log(job["log"])
         code = job["process"].poll()
         return {"job_id": job_id, "running": code is None, "exit_code": code,
@@ -230,17 +245,22 @@ class CommandSupervisor:
                 "elapsed_seconds": round(time.monotonic() - job["started"], 3)}
 
     def stop(self, job_id):
-        job = _JOBS.get(job_id)
+        job = self.jobs.get(job_id)
         if job is None:
             raise ValueError(f"Unknown job id: {job_id}")
-        if job["process"].poll() is None:
-            self._terminate(job["process"])
-            job["process"].wait()
+        self._terminate(job["process"])
+        job["process"].wait()
         output, truncated = self._read_log(job["log"])
         self.ledger.record("command", command=job["command"], background=True,
                            exit_code=job["process"].returncode, stopped=True)
         return {"job_id": job_id, "running": False, "exit_code": job["process"].returncode,
                 "command": job["command"], "output": output, "output_truncated": truncated}
+
+    def close(self):
+        """Reap this task's jobs when it ends, including on interruption."""
+        for job in self.jobs.values():
+            self._terminate(job["process"])
+            job["process"].wait()
 
     def invoke(self, arguments):
         """Entry point used by ToolRunner for the run_command tool."""

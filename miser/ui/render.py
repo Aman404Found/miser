@@ -7,9 +7,106 @@ terminal width on every call so resizing stays correct.
 """
 
 import re
+import io
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import theme
+
+try:  # Rich is the existing optional TUI extra, never a core dependency.
+    from rich.console import Console
+    from rich.markdown import Markdown, Heading, CodeBlock, TableElement, HorizontalRule
+    from rich.text import Text
+    from rich.syntax import Syntax
+    from rich.table import Table
+    from rich.theme import Theme
+    from rich import box
+except ImportError:
+    Markdown = None
+
+
+if Markdown is not None:
+    class _Separator(HorizontalRule):
+        @classmethod
+        def create(cls, markdown, token):
+            element = cls()
+            element.character = markdown.glyphs.rule
+            return element
+
+        def __rich_console__(self, console, options):
+            yield Text(self.character * options.max_width, style=theme.FAINT)
+
+    class _Heading(Heading):
+        def __rich_console__(self, console, options):
+            self.text.justify = "left"
+            yield self.text
+
+    class _Code(CodeBlock):
+        @classmethod
+        def create(cls, markdown, token):
+            element = super().create(markdown, token)
+            element.bar = markdown.glyphs.bar
+            return element
+
+        def __rich_console__(self, console, options):
+            prefix = f"  {self.bar} "
+            yield Text(prefix + self.lexer_name, style=f"dim {theme.CYAN}")
+            source = str(self.text).removesuffix("\n").expandtabs(4)
+            syntax = Syntax(source, self.lexer_name,
+                            theme="monokai", background_color=theme.SURFACE,
+                            word_wrap=True, padding=0)
+            highlighted = syntax.highlight(source)[:len(source)]
+            for logical in highlighted.split("\n", allow_blank=True):
+                cuts, offset = [], 0
+                for part in theme.fold(logical.plain, max(1, options.max_width - 4))[:-1]:
+                    offset += len(part)
+                    cuts.append(offset)
+                for part in logical.divide(cuts):
+                    row = Text(prefix, style=f"dim {theme.FAINT}")
+                    row.append(part)
+                    yield row
+            yield Text(f"  {self.bar}", style=f"dim {theme.FAINT}")
+
+    class _Table(TableElement):
+        def __rich_console__(self, console, options):
+            headers = self.header.row.cells if self.header and self.header.row else []
+            rows = self.body.rows if self.body else []
+            if len(headers) * 14 > options.max_width:
+                for index, row in enumerate(rows):
+                    if index:
+                        yield Text("")
+                    for column, cell in enumerate(row.cells):
+                        label = headers[column].content if column < len(headers) else Text(str(column + 1))
+                        yield Text.assemble(label, (": ", f"dim {theme.MUTED}"), cell.content)
+                return
+            table = Table(box=box.SIMPLE_HEAD, border_style=theme.FAINT,
+                          header_style=f"bold {theme.TEXT}", padding=(0, 1), expand=False)
+            for header in headers:
+                table.add_column(header.content, overflow="fold")
+            for row in rows:
+                table.add_row(*(cell.content for cell in row.cells))
+            yield table
+
+    class _Markdown(Markdown):
+        elements = {**Markdown.elements, "heading_open": _Heading, "fence": _Code,
+                    "code_block": _Code, "table_open": _Table, "hr": _Separator}
+
+
+@dataclass
+class MarkdownBlock:
+    """Original response retained for streaming replacement and width reflow."""
+    source: str = ""
+    _cache: tuple = field(default=(), init=False, repr=False)
+    _rows: list = field(default_factory=list, init=False, repr=False)
+
+    def lines(self, width):
+        source = self.source
+        key = (source, width)
+        if self._cache != key:
+            self._rows = markdown(source, width, color=True) or [""]
+            self._cache = key
+        return self._rows
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 BULLET_RE = re.compile(r"^(\s*)[-*+]\s+(.*)$")
@@ -21,12 +118,16 @@ TOOL_LABELS = {
     "repo_map": "index", "list_files": "list", "search": "search", "zoom": "read",
     "recall": "recheck", "edit": "edit", "edit_batch": "edit", "apply_patch": "patch",
     "blast_radius": "refs", "run_tests": "test", "verify_claim": "verify",
+    "ask_user": "question",
+    "mcp_list_tools": "external tools", "mcp_call": "external call",
     "write_todos": "plan", "web_search": "web", "fetch_url": "fetch",
 }
 
 STATUS_LABELS = {
     "tests_passed": ("tests passed", theme.green),
     "answered": ("answered", theme.dim),
+    "edited_unverified": ("edited · tests not run", theme.yellow),
+    "needs_input": ("needs your input", theme.yellow),
     "incomplete": ("no more tool calls", theme.yellow),
     "truncated": ("output truncated", theme.yellow),
     "step_limit": ("step limit reached", theme.yellow),
@@ -90,9 +191,11 @@ def user_block(text, width, glyphs=None):
 
 def agent_label(model, width=0, glyphs=None):
     g = _glyphs(glyphs)
-    label = f"{theme.cyan(g.agent)} {theme.bold('miser')}"
+    label = f"{theme.cyan(g.agent)} {theme.bold('MISER')}"
     if model:
-        label += theme.dim(" · " + model)
+        available = max(0, width - theme.display_width(label) - 3) if width else len(model)
+        if available:
+            label += theme.dim(" · " + theme.clip(model, available))
     return label
 
 
@@ -163,7 +266,7 @@ def render_line(line, width, glyphs=None, fence=None):
     if fence is not None:
         if stripped.startswith("```"):
             return [theme.dim(f"  {g.bar}")], None
-        return [theme.dim(f"  {g.bar} ") + theme.clip(line, max(10, width - 4))], fence
+        return [theme.dim(f"  {g.bar} ") + part for part in theme.fold(line, max(1, width - 4))], fence
     if stripped.startswith("```"):
         language = stripped[3:].strip() or "code"
         return [theme.dim(f"  {g.bar} {language}")], language
@@ -173,8 +276,8 @@ def render_line(line, width, glyphs=None, fence=None):
     if heading:
         level, text = len(heading.group(1)), heading.group(2)
         if level == 1:
-            return [theme.bold(_inline(text)), theme.dim(g.rule * min(width, 60))], None
-        return [theme.bold(_inline(text))], None
+            return theme.wrap(theme.bold(_inline(text)), width) + [theme.dim(g.rule * min(width, 60))], None
+        return theme.wrap(theme.bold(_inline(text)), width), None
     bullet = BULLET_RE.match(line)
     if bullet:
         prefix = " " * len(bullet.group(1)) + f"{g.bullet} "
@@ -192,9 +295,26 @@ def render_line(line, width, glyphs=None, fence=None):
     return theme.wrap(_inline(line), width), None
 
 
-def markdown(text, width=None, glyphs=None):
-    """Render markdown-ish text into a list of terminal lines."""
+def markdown(text, width=None, glyphs=None, color=None):
+    """Shared Markdown renderer; Rich when installed, stdlib fallback otherwise."""
     width = max(20, width or theme.term_width())
+    if Markdown is not None:
+        buffer = io.StringIO()
+        colored = theme.color_enabled() if color is None else color
+        console = Console(file=buffer, width=width, height=10000, force_terminal=colored,
+                          color_system="truecolor" if colored else None, no_color=not colored, highlight=False,
+                          theme=Theme({"markdown.h1": f"bold {theme.TEXT}",
+                                       "markdown.h2": f"bold {theme.CYAN}",
+                                       "markdown.code": f"{theme.CYAN} on {theme.SURFACE}",
+                                       "markdown.link": f"underline {theme.CYAN}",
+                                       "markdown.link_url": f"dim {theme.MUTED}"}))
+        document = _Markdown(theme.clean(text), hyperlinks=False, justify="left", style=theme.TEXT)
+        document.glyphs = _glyphs(glyphs)
+        console.print(document, end="")
+        rows = buffer.getvalue().splitlines()
+        prefix = f"  {document.glyphs.bar} "
+        return [row if theme.ANSI_RE.sub("", row).startswith(prefix) else
+                re.sub(r" +(?=(?:\x1b\[[0-9;]*m)*$)", "", row) for row in rows]
     lines, fence, blank = [], None, False
     for raw in theme.clean(text).splitlines():
         rendered, fence = render_line(raw, width, glyphs, fence)
@@ -222,7 +342,7 @@ class MarkdownStream:
     at a word boundary and emitted as it grows so text appears while it arrives.
     """
 
-    def __init__(self, emit, width=None, glyphs=None):
+    def __init__(self, emit, width=None, glyphs=None, replace=None):
         self.emit = emit
         self.width = max(20, width or theme.term_width())
         self.glyphs = glyphs or theme.symbols()
@@ -230,16 +350,60 @@ class MarkdownStream:
         self.fence = None
         self.started = False
         self.finished = False
+        self.replace = replace
+        self.raw = ""
+        self._last_update = 0.0
+        self._table = []
+        self._delimiter = ""
 
     def _emit_line(self, line):
+        opening = re.match(r"^\s*(`{3,}|~{3,})(.*)$", line)
+        if self.fence is None and opening:
+            self._delimiter = opening[1]
+            self.fence = opening[2].strip() or "code"
+            self.emit(theme.dim(f"  {self.glyphs.bar} {self.fence}"))
+            return
+        if self.fence is not None:
+            if re.fullmatch(r"\s*" + re.escape(self._delimiter[0]) + "{" + str(len(self._delimiter)) + r",}\s*", line):
+                self.emit(theme.dim(f"  {self.glyphs.bar}"))
+                self.fence = None
+            else:
+                for part in theme.fold(line, max(1, self.width - 4)):
+                    self.emit(theme.dim(f"  {self.glyphs.bar} ") + part)
+            return
+        if Markdown is not None:
+            for item in markdown(line, self.width, self.glyphs) or [""]:
+                self.emit(item)
+            return
         rendered, self.fence = render_line(line, self.width, self.glyphs, self.fence)
         for item in rendered:
             self.emit(item)
+
+    def _consume_line(self, line):
+        if self.fence is None and (self._table or line.count("|") >= 2):
+            if line.strip() and "|" in line:
+                self._table.append(line)
+                return
+            self._flush_table()
+        self._emit_line(line)
+
+    def _flush_table(self):
+        if self._table:
+            for item in markdown("\n".join(self._table), self.width, self.glyphs):
+                self.emit(item)
+            self._table = []
 
     def feed(self, chunk):
         if not chunk or self.finished:
             return
         self.started = True
+        self.raw += chunk
+        if self.replace is not None:
+            now = time.monotonic()
+            if not self._last_update or now - self._last_update >= 0.04:
+                self.replace(self.raw)
+                self._last_update = now
+            return
         self.buffer += chunk.replace("\r\n", "\n")
         while True:
             if self.fence is not None:
@@ -247,14 +411,18 @@ class MarkdownStream:
                 if index < 0:
                     return
                 line, self.buffer = self.buffer[:index], self.buffer[index + 1:]
-                self._emit_line(line)
+                self._consume_line(line)
                 continue
             index = self.buffer.find("\n")
             if index >= 0:
                 line, self.buffer = self.buffer[:index], self.buffer[index + 1:]
-                self._emit_line(line)
+                self._consume_line(line)
                 continue
             if theme.display_width(self.buffer) > self.width:
+                # Inline constructs need their closing delimiter before append-only
+                # output is committed. The TUI instead replaces a live raw block.
+                if any(marker in self.buffer for marker in ("*", "`", "[", "|", "~", "_")):
+                    return
                 cut = self.buffer.rfind(" ", 0, self.width)
                 if cut <= 0:
                     cut = self.width
@@ -267,14 +435,18 @@ class MarkdownStream:
         if self.finished:
             return
         self.finished = True
+        if self.replace is not None:
+            self.replace(self.raw)
+            return
+        if self._table:
+            if self.buffer:
+                self._table.append(self.buffer)
+                self.buffer = ""
+            self._flush_table()
         if self.buffer:
-            if self.fence is not None:
-                self.emit(theme.dim(f"  {self.glyphs.bar} ") + theme.clip(self.buffer, self.width - 4))
-                self.emit(theme.dim(f"  {self.glyphs.bar}"))
-            else:
-                self._emit_line(self.buffer)
+            self._emit_line(self.buffer)
             self.buffer = ""
-        elif self.fence is not None:
+        if self.fence is not None:
             self.emit(theme.dim(f"  {self.glyphs.bar}"))
         self.fence = None
 
@@ -410,7 +582,7 @@ def render_diff(diff_text, width=None, max_lines=120, glyphs=None):
         return theme.dim("  no changes")
     files = {item["path"]: item for item in diff_files(text)}
     raw_lines = text.splitlines()
-    limit = len(raw_lines) if max_lines is None else max(1, int(max_lines))
+    limit = float("inf") if max_lines is None else max(1, int(max_lines))
     out = []
     old_line = new_line = 0
     truncation = ""
@@ -425,9 +597,9 @@ def render_diff(diff_text, width=None, max_lines=120, glyphs=None):
                 path = path[2:]
             stats = files.get(path, {"added": 0, "removed": 0})
             out.append("")
-            out.append(f"{theme.bold(path)}  "
-                       f"{theme.green('+' + str(stats['added']))} "
-                       f"{theme.red('−' + str(stats['removed']))}")
+            out.extend(theme.wrap(f"{theme.bold(path)}  "
+                                 f"{theme.green('+' + str(stats['added']))} "
+                                 f"{theme.red('−' + str(stats['removed']))}", width))
             continue
         if line.startswith("--- ") or line.startswith("diff --git") or line.startswith("index "):
             continue
@@ -440,16 +612,18 @@ def render_diff(diff_text, width=None, max_lines=120, glyphs=None):
             out.append(theme.dim("  " + line))
             continue
         if line.startswith("+"):
-            out.append(theme.dim(f"{new_line:>5}") + theme.green(" + ") +
-                       theme.green(theme.clip(line[1:], width - 9)))
+            for position, part in enumerate(theme.fold(line[1:], width - 9)):
+                out.append(theme.dim(f"{new_line:>5}" if position == 0 else "     ") +
+                           theme.green(" + " if position == 0 else "   ") + theme.change(part, True))
             new_line += 1
         elif line.startswith("-"):
-            out.append(theme.dim(f"{old_line:>5}") + theme.red(" - ") +
-                       theme.red(theme.clip(line[1:], width - 9)))
+            for position, part in enumerate(theme.fold(line[1:], width - 9)):
+                out.append(theme.dim(f"{old_line:>5}" if position == 0 else "     ") +
+                           theme.red(" - " if position == 0 else "   ") + theme.change(part, False))
             old_line += 1
         elif line.startswith(" "):
-            out.append(theme.dim(f"{new_line:>5}") + "   " +
-                       theme.clip(line[1:], width - 9))
+            for position, part in enumerate(theme.fold(line[1:], width - 9)):
+                out.append(theme.dim(f"{new_line:>5}" if position == 0 else "     ") + "   " + part)
             old_line += 1
             new_line += 1
         else:
@@ -501,11 +675,12 @@ def result_panel(bill, elapsed, width=None, prefix="task", glyphs=None):
     label, color = STATUS_LABELS.get(status, (status, theme.dim))
     if status == "tests_passed":
         glyph = g.ok
+        label = "Task completed · tests passed"
     elif status == "answered":
         glyph = g.info
     elif status in ("incomplete", "truncated", "step_limit", "budget_exhausted", "budget_exceeded",
                     "interrupted", "stream_interrupted", "rejected_non_coding",
-                    "model_unavailable"):
+                    "model_unavailable", "needs_input", "edited_unverified"):
         glyph = g.warn
     else:
         glyph = g.fail
@@ -513,7 +688,7 @@ def result_panel(bill, elapsed, width=None, prefix="task", glyphs=None):
              f"{theme.dim(f'  ·  {elapsed:.1f}s')}"]
     usage = usage_phrase(bill)
     if usage:
-        lines.append(theme.dim("  " + usage))
+        lines.extend(theme.dim(line) for line in theme.wrap(usage, width, initial="  ", subsequent="  "))
     if status == "model_unavailable":
         lines.append(theme.dim("  retried automatically; wait, or /model primary,fallback"))
     if status == "truncated":
@@ -594,3 +769,12 @@ def error_hint(error):
     if "lacks valid usage" in text:
         return "The gateway omitted usage; disable streaming or enable usage reporting."
     return None
+
+
+def timing_line(timing):
+    """Compact host timing, keeping overlapping sums and missing data explicit."""
+    line = (f"Elapsed {timing['wall_seconds']:.2f}s · Model requests {timing['model_seconds']:.2f}s"
+            f" · Tests {timing['test_seconds']:.2f}s · Other tools (sum) {timing['tool_seconds_sum']:.2f}s")
+    if timing.get("missing_durations"):
+        line += f" · {timing['missing_durations']} duration(s) unknown"
+    return line

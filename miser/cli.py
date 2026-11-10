@@ -10,7 +10,10 @@ from pathlib import Path
 
 from .agent import run_agent
 from .client import ModelClient
+from .intent import task_profile
 from .ledger import Ledger, receipt, write_json
+from .knowledge import ProjectKnowledge
+from .mcp import MCPAccess, load_config
 from .tools import ToolRunner
 from .verification import EvidenceSearch
 from .workspace import Workspace
@@ -51,16 +54,23 @@ def show(value):
 
 
 def want_tui(args):
-    """Full-screen UI only for an interactive terminal with Rich available."""
+    """Native full-screen UI only for an interactive terminal with Textual."""
+    required = getattr(args, "force_tui", False)
+    if required and args.exec_tasks:
+        raise ValueError("--tui requires interactive input; --exec remains non-interactive")
     if args.no_tui or args.exec_tasks:
         return False
-    if os.getenv("MISER_PLAIN") or os.getenv("NO_COLOR"):
+    if not required and (os.getenv("MISER_PLAIN") or os.getenv("NO_COLOR")):
         return False
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        if required:
+            raise ValueError("--tui requires a terminal on stdin and stdout")
         return False
     try:
-        from rich.console import Console  # noqa: F401
+        from textual.app import App
     except ImportError:
+        if required:
+            raise ValueError("Textual is not installed in this Python environment; install MISER's [tui] extra or use .venv/bin/python") from None
         return False
     return True
 
@@ -79,7 +89,11 @@ def build_parser():
     chat.add_argument("--exec", dest="exec_tasks", action="append", metavar="TASK",
                       help="Run one task/question non-interactively, then exit; repeatable")
     chat.add_argument("--no-stream", action="store_true", help="Disable live streaming (use plain responses)")
-    chat.add_argument("--no-tui", action="store_true", help="Use the line-oriented interface instead of the full-screen UI")
+    chat.add_argument("--no-memory", action="store_true", help="Do not load saved project facts")
+    chat.add_argument("--mcp-config", type=Path, help="Explicit trusted MCP HTTP config outside the workspace")
+    interface = chat.add_mutually_exclusive_group()
+    interface.add_argument("--no-tui", action="store_true", help="Use the line-oriented interface instead of the full-screen UI")
+    interface.add_argument("--tui", dest="force_tui", action="store_true", help="Require the native Textual interface; fail clearly if unavailable")
     chat.add_argument("--auto-commit", action="store_true", help="Automatically commit passing edits to Git")
     chat.add_argument("--architect-model", default=os.getenv("MISER_ARCHITECT_MODEL"),
                       help="Reasoning model that plans before the editor model patches")
@@ -108,7 +122,9 @@ def build_parser():
     run = commands.add_parser("run", help="Run the real model-backed coding agent")
     run.add_argument("repo", type=Path)
     run.add_argument("task")
-    run.add_argument("--test-command", required=True, help="Fixed acceptance command; parsed as argv, never a shell")
+    run.add_argument("--test-command", help="Required for coding; fixed acceptance argv, never a shell")
+    run.add_argument("--profile", choices=("coding", "inspect", "research"),
+                     help="Host-selected tool capabilities; inferred from the task when omitted")
     run.add_argument("--model", default=os.getenv("MISER_MODEL"))
     run.add_argument("--token-budget", type=int, default=24000)
     run.add_argument("--max-steps", type=int, default=16)
@@ -118,6 +134,18 @@ def build_parser():
     run.add_argument("--fallback-models", default=os.getenv("MISER_FALLBACK_MODELS"),
                      help="Comma-separated models to try after a 429/503 from the primary")
     run.add_argument("--out", type=Path)
+    run.add_argument("--no-memory", action="store_true", help="Do not load saved project facts")
+    run.add_argument("--mcp-config", type=Path, help="Explicit trusted MCP HTTP config; calls require interactive approval")
+    mcp = commands.add_parser("mcp", help="Discover host-allowlisted external MCP tools without a model")
+    mcp.add_argument("repo", type=Path)
+    mcp.add_argument("--config", type=Path, required=True)
+    mcp.add_argument("--server", help="Configured server alias; omit to list aliases without network")
+    mcp.add_argument("--out", type=Path)
+    memory = commands.add_parser("memory", help="Review or manage host-saved project facts (no model)")
+    memory.add_argument("repo", type=Path)
+    memory.add_argument("action", choices=("list", "add", "forget", "clear", "on", "off"), nargs="?", default="list")
+    memory.add_argument("text", nargs="*")
+    memory.add_argument("--path", help="Link an added fact to an accessible source file version")
     bill = commands.add_parser("receipt", help="Read a run's recorded bill")
     bill.add_argument("ledger", type=Path)
     demo = commands.add_parser("demo", help="Scripted offline tool demo; not an LLM benchmark")
@@ -173,6 +201,47 @@ def main(argv=None):
     effective = sys.argv[1:] if argv is None else argv
     args = build_parser().parse_args(effective or ["chat"])
     try:
+        if args.command == "mcp":
+            workspace = Workspace(args.repo)
+            servers = load_config(args.config, workspace.root)
+            directory = args.out or run_path("mcp")
+            directory.mkdir(parents=True, exist_ok=False)
+            ledger = Ledger(directory / "ledger.json", mode="mcp-discovery", benchmark=False)
+            access = MCPAccess(servers, ledger)
+            try:
+                catalog = access.list_tools(args.server)
+                ledger.finish("mcp_discovered")
+            except Exception:
+                ledger.finish("error", note="MCP discovery failed; remote charges are not inferred")
+                raise
+            finally:
+                access.close()
+            show({"catalog": catalog, "ledger": str(ledger.path)})
+            return 0
+        if args.command == "memory":
+            store = ProjectKnowledge(args.repo)
+            if args.path and args.action != "add":
+                raise ValueError("--path applies only to memory add")
+            if args.action == "add":
+                fact = store.remember(" ".join(args.text), path=args.path)
+                show({"saved": fact["id"]})
+            elif args.action == "forget":
+                if len(args.text) != 1:
+                    raise ValueError("Use memory REPO forget ID")
+                store.forget(args.text[0])
+                show({"forgotten": True})
+            else:
+                if args.text:
+                    raise ValueError("Unexpected arguments for this memory action")
+                if args.action == "clear":
+                    store.clear()
+                    show({"cleared": True})
+                elif args.action in {"on", "off"}:
+                    store.set_enabled(args.action == "on")
+                    show({"enabled": args.action == "on"})
+                else:
+                    show({"enabled": store.load()["enabled"], "facts": store.list_facts()})
+            return 0
         if args.command == "chat":
             from .terminal import Terminal
             if args.token_budget < 1000:
@@ -184,15 +253,23 @@ def main(argv=None):
                 args.repo = target
                 args.test_command = shlex.join([sys.executable, "-m", "unittest", "discover", "-s", "."]) if args.demo == "python" else "node --test"
             use_tui = want_tui(args)
+            if (not use_tui and not args.no_tui and not args.exec_tasks
+                    and not os.getenv("NO_COLOR") and not os.getenv("MISER_PLAIN")
+                    and sys.stdin.isatty() and sys.stdout.isatty()):
+                print("Native UI is unavailable in this Python environment. From the MISER checkout, run:\n"
+                      "  .venv/bin/python -m miser chat . --tui\n"
+                      "Or activate .venv first; other installations need the [tui] extra. Using the line interface now.",
+                      file=sys.stderr)
             initial = []
             terminal = Terminal(args.repo, args.model, args.test_command, args.token_budget,
                                 write=initial.append if use_tui else print,
                                 auto_commit=args.auto_commit, resume=bool(args.resume),
                                 architect_model=args.architect_model,
-                                stream=not args.no_stream)
+                                stream=not args.no_stream, use_project_memory=not args.no_memory,
+                                mcp_config=args.mcp_config)
             if use_tui:
-                from .tui.app import TuiApp
-                return TuiApp(terminal, initial=initial).run()
+                from .tui.textual_app import MiserApp
+                return MiserApp(terminal, initial=initial).run() or 0
             return terminal.run(tasks=args.exec_tasks)
         if args.command == "evaluate":
             from .evaluation import evaluate_fixtures
@@ -266,7 +343,10 @@ def main(argv=None):
         if args.command == "run":
             if not args.model:
                 raise ValueError("Set MISER_MODEL or pass --model (configure its provider in Bifrost first)")
-            command = shlex.split(args.test_command)
+            profile = args.profile or task_profile(args.task) or "coding"
+            if profile == "coding" and not args.test_command:
+                raise ValueError("--test-command is required for the coding profile")
+            command = shlex.split(args.test_command or "")
             workspace = Workspace(args.repo)
             directory = args.out or run_path("agent")
             directory.mkdir(parents=True, exist_ok=False)
@@ -274,19 +354,24 @@ def main(argv=None):
                             repo=str(workspace.root), task=args.task, test_command=command,
                             token_budget=args.token_budget, max_steps=args.max_steps,
                             history_turns=4, fallback_models=args.fallback_models,
-                            architect_model=args.architect_model,
+                            architect_model=args.architect_model, profile=profile,
                             cache_policy="Disable gateway caching for fair cold-run comparisons")
-            runner = ToolRunner(workspace, ledger, command, test_timeout=args.test_timeout)
+            access = MCPAccess(load_config(args.mcp_config, workspace.root), ledger) if args.mcp_config else None
+            runner = ToolRunner(workspace, ledger, command, test_timeout=args.test_timeout, profile=profile,
+                                use_project_memory=not args.no_memory, mcp_access=access)
             client = ModelClient(args.model, fallbacks=args.fallback_models,
                                  on_notice=lambda text: print(text, file=sys.stderr))
             architect = ModelClient(args.architect_model, fallbacks=args.fallback_models,
                                     on_notice=lambda text: print(text, file=sys.stderr)) \
-                if args.architect_model else None
+                if profile == "coding" and args.architect_model else None
             status = run_agent(args.task, client, runner, ledger,
                                args.token_budget, args.max_steps, progress=print,
                                architect_client=architect)
-            show({"receipt": receipt(ledger.data), "ledger": str(ledger.path)})
-            return 0 if status == "tests_passed" else 1
+            result = {"receipt": receipt(ledger.data), "ledger": str(ledger.path)}
+            if status == "needs_input":
+                result["question"] = ledger.data.get("question")
+            show(result)
+            return 0 if status == "tests_passed" or (profile != "coding" and status == "answered") else 1
     except (ValueError, OSError, RuntimeError, KeyError, IndexError, TypeError) as error:
         print(f"MISER: {error}", file=sys.stderr)
         return 2

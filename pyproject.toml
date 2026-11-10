@@ -10,7 +10,8 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-tui = ["rich>=13.7"]
+tui = ["textual>=8.2.8,<9"]
+ui-test = ["pyte>=0.8.2,<0.9"]
 
 [project.scripts]
 miser = "miser.cli:main"

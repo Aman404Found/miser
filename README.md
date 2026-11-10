@@ -3,46 +3,150 @@
 A coding agent that spends context carefully and records the bill. Early working foundation, not a benchmark-winning claim.
 
 Python 3.11+ runs the core CLI with **no required third-party dependencies**. The
-full-screen interface uses Rich when installed (`pip install 'miser-agent[tui]'`) and falls
-back to the line interface otherwise. JavaScript demos require Node.js.
+full-screen interface uses optional Textual (`pip install 'miser-agent[tui]'`).
+Without it, the CLI uses its line interface. JavaScript demos require Node.js.
 
 ## Interactive application
 
-Run `python3 -m miser` to open a full-screen coding terminal in the current directory:
-a centered welcome with MISER branding and a composer card, followed by a structured
-conversation with scrollable history, a persistent input area, real tool/model progress,
-and an honest summary per task. The terminal is repainted in place on the alternate
-screen; output does not accumulate as shell lines. `/help` lists commands; Tab discovers
-commands.
+The native Textual application has a scrollable conversation, persistent multiline
+composer, Markdown responses, real tool/test progress, a responsive session sidebar,
+and modal edit/command approvals. It uses the existing MISER backend and receipts.
 
-```text
-  MISER  gemini/gemini-3.5-flash                              680 tok · 1 task
-────────────────────────────────────────────────────────────────────────────
+Launch using the prepared project environment:
 
-  ▌ fix the percentage discount calculation.
-
-  ⏺ miser · gemini/gemini-3.5-flash
-    The formula multiplies instead of subtracting the discount.
-    ✔ read   pricing.py · 0.0s
-    ✔ edit   pricing.py
-    ✔ acceptance tests passed
-
-  ✔ tests passed  ·  0.8s
-    680 provider tokens (600 in / 80 out)
-  pricing.py  +1 −1
-    ...
-  ▌  Ask anything…
-  tab complete · PgUp history · ctrl+d exit
+```bash
+.venv/bin/python -m miser chat . --tui
 ```
 
-Each task starts fresh model context, retains workspace edits, and saves a receipt and
-patch. Use Enter to submit, Ctrl+J (or Alt+Enter) for a newline, Tab to complete commands,
-Up/Down for persistent history, PgUp/PgDn to scroll, Ctrl+C to interrupt, and Ctrl+D to
-exit. `/confirm on` reviews each edit with `y`/`n`/`a`/`d`; `/clear` returns to the welcome
-screen. `--no-tui` forces the line interface. `--resume` restores session metrics, and
-`--exec 'TASK'` (repeatable) runs prompts non-interactively. `--no-stream` disables live
-streaming. See [terminal UI](docs/terminal-ui.md) for the layout, keybindings, fallback
-rules, streaming semantics, and remaining limitations.
+To keep using `python3`, first run `source .venv/bin/activate` in the project.
+System Python without Textual uses the line interface; `--tui` refuses that fallback.
+
+For a fresh checkout, install the optional interface with
+`python3 -m pip install -e '.[tui]'` in your virtual environment. `--tui` requires
+Textual and an interactive terminal; it fails clearly rather than silently launching
+the legacy UI. Without that flag, TTY detection selects Textual when available;
+`--no-tui`, `--exec`, pipes, `NO_COLOR` or `MISER_PLAIN` select the line interface.
+
+Enter submits; Ctrl+J / Alt+Enter inserts a newline. Tab completes commands/paths,
+Ctrl+P / Ctrl+N navigates prompt history, PgUp / PgDn scrolls conversation, F2 reviews
+diffs, Ctrl+C cancels, and Ctrl+D exits safely. Native approval buttons are keyboard
+and mouse accessible. Only an explicit **Approve all edits** disables later edit
+prompts; commands and MCP tools still require fresh approval. `/confirm on` restores
+edit prompts. `/clear` clears visible history without undoing files.
+
+Each chat prompt now shows its selected route and test policy. A compact timing
+summary separates model-request waits, acceptance checks and other tool sums;
+`/timing` repeats the latest diagnostics without model calls. Parallel/nested work
+can overlap, so category sums are not a breakdown that adds up to elapsed wall time.
+Timing is visibility, not a measured speedup. For lightweight edits, explicitly
+choose `/checks manual` to skip automatic acceptance commands; edited results are
+labelled **unverified**. `/checks required` restores the default baseline/post-edit
+checks. Path/version/approval guards and command allowlists stay active. File
+removal is not yet supported; the agent must not attempt a shell workaround.
+
+`--resume` restores session metrics, not full conversation. `--exec 'TASK'`
+(repeatable) preserves non-interactive automation; `--no-stream` disables streaming.
+See [terminal UI](docs/terminal-ui.md) for actual CLI captures, verification and limits.
+
+Explicit file-display requests run locally, without model calls or acceptance tests:
+`read README.md`, `read Readme.md file and print first line`, or
+`show first 20 lines of "project notes.txt"`. Reads retain workspace path/symlink/
+sensitive-file guards, allow 1–120 lines and cap displayed text at 14,000 characters.
+An exact filename wins; case-insensitive fallback requires one unique match in the
+specified parent directory.
+
+Repository questions such as `Explain miser/ledger.py` now use a read-only model
+loop that reads actual source. Local inspection exposes 9 tools, web research 12,
+and coding 19. Inspection/research skip acceptance tests and architect calls and
+refuse edits, subprocess commands and tests at dispatch. Coding retains acceptance
+verification and fresh command approval. Profile inference is a language heuristic;
+the CLI can enforce an explicit read-only profile:
+
+```bash
+python3 -m miser run . 'Explain miser/ledger.py' --profile inspect --model 'provider/model-id'
+python3 -m miser run . 'Look up official documentation for pathlib' --profile research --model 'provider/model-id'
+```
+
+`--test-command` remains required for the coding profile. These two read-only
+examples call a real model when run and spend provider tokens; no live cost or
+latency improvement is claimed from the smaller schemas alone.
+
+The new `ask_user` tool can pause an active terminal/TUI task for a short question
+with up to five choices or a free-text answer. Enter a choice number or type an
+answer; the same task then continues with that answer. Escape in the TUI leaves the
+question unanswered; Ctrl+C interrupts. Questions cannot be batched with edits or
+other preplanned calls. At most three questions are allowed per task. Headless,
+piped and `--exec` sessions stop with `needs_input` and show the question rather
+than blocking or guessing. Rerun such a task with the missing detail supplied.
+Clarification events store response presence and option count, not raw answers.
+
+Project knowledge now persists across tasks and MISER sessions in the same repository.
+Save facts explicitly; MISER does not automatically learn instructions from files or
+model replies:
+
+```text
+/remember Core CLI uses the Python standard library
+/remember --path pyproject.toml Core CLI requires Python 3.11 or later
+/memory
+/forget FACT_ID
+/memory off
+/memory on
+/memory clear
+```
+
+The CLI equivalents need no model: `python3 -m miser memory . list`,
+`python3 -m miser memory . add 'Core CLI uses the standard library'`, and
+`python3 -m miser memory . forget FACT_ID`. Add a source link with `--path PATH`
+after the fact text. Linked facts are excluded from context when source contents
+change, disappear, become symlinks or cannot be safely read; review them with
+`/memory`, then forget/re-save if needed.
+
+Limits: 20 facts, 400 characters each; at most 8 whole facts and 3,000 serialized
+UTF-8 bytes enter a task's context, ranked by simple keyword overlap and recency.
+There is no context block when the store is absent/disabled/empty. Facts enter as
+untrusted historical data, never system instructions; they can be wrong or stale.
+The host saves/removes them; model tools cannot modify the store. Known configured
+credentials and credential assignments are refused, but this is not a complete
+secret scanner or a model-injection guarantee. Do not save secrets.
+
+The ignored `.miser/project-knowledge.json` store uses private files, POSIX no-follow
+directory-relative access, a host-writer lock, atomic replacement and file/directory
+fsync. Storage is local to that repository path; copying it into another repository
+is refused. POSIX access/locking is required for this feature; Windows behavior is
+not verified. `chat --no-memory` and `run --no-memory` bypass loading completely,
+including a corrupt store. Corruption otherwise fails closed and requires explicit
+clear/recovery. This project store is separate from the development log `memory.md`.
+
+Recent conversation now includes local reads, informational replies, greetings and
+coding/inspection tasks in the same live session. Asking `what was my previous
+message?` returns the latest submitted message locally, without a model call.
+Slash commands are excluded. History retains at most six pairs / 12,000 serialized
+UTF-8 bytes, with each message bounded to 1,500 UTF-8 bytes plus a truncation marker;
+the latest three pairs enter model context. This history is session-local and is
+not reconstructed by `--resume` or the separate project-facts store.
+
+Explicit requests such as `i want you to read 4 lines from Readme.md and then print
+here` also use the guarded local route, with no model or acceptance-test overhead.
+This applies to permitted text files generally: for example `show first 2 lines of
+app.py`, `read data.json`, or `read "project notes.txt"`. It is not README-specific.
+Binary, sensitive and unsafe paths remain refused; local display is bounded.
+Writes still use the model tool loop, checked versions/unique edits and acceptance
+verification. Batched reads/edits reduce avoidable round trips, but no universal
+read/write speedup or provider-cache improvement has been measured.
+Model replies already stream by default; use `--no-stream` only when needed.
+The native TUI uses Textual layout, input, scrolling and Markdown widgets rather
+than flattening responses into manually repainted rows. Streamed source updates one
+response widget per model request. Code highlighting, tables and links use native
+rendering; links are inspected inside MISER rather than opened automatically.
+Diff reviews retain raw patches separately from styled display. Actual CLI PTY tests
+exercise the backend with simulated provider replies and real acceptance commands;
+these are not live-model performance measurements.
+
+External tools are opt-in: `chat . --mcp-config /outside/project/mcp.json` loads a
+host-controlled HTTP MCP configuration. Only allowlisted, host-classified read-only
+tools are supported, with fresh approval for every external call. `/mcp` lists
+aliases; `/mcp list SERVER` discovers tools. Headless calls are refused. See the
+[MCP setup and limitations](docs/mcp.md); no live service integration is verified.
 
 Configure resilience and a two-model workflow in the session:
 
@@ -68,9 +172,10 @@ python3 -m miser --help
 python3 -m miser doctor
 python3 -m miser demo --language python
 python3 -m miser demo --language javascript
-python3 -m unittest discover -s tests -v
+.venv/bin/python -m unittest discover -s tests -v
 ```
 
+The full test suite requires the optional `tui` and development `ui-test` extras.
 The demos copy small, deliberately buggy fixtures into `runs/`, apply a **scripted** fix, and run actual tests before and after. They make no LLM or Tavily calls and are not evidence of token savings. Original examples stay buggy so demos are repeatable.
 
 ## Explore any language
@@ -85,7 +190,7 @@ python3 -m miser inspect examples/python_bug --file pricing.py --level 1 --symbo
 |---|---|
 | Terminal interface | full-screen welcome + conversation, fixed composer/footer, scrolling, streamed Markdown, tool activity, reviewable diffs; line fallback |
 | List, literal search, focused reads, delta recall, exact edits | UTF-8 text files across languages |
-| Atomic multi-file edits and standard unified-diff patches | Any text file; all-or-nothing transaction |
+| Multi-file edits and standard unified-diff patches | Validate and stage before writing; atomic per file, best-effort rollback across files |
 | Function/class outlines and symbol reads | Python AST; JS/TS/JSX/TSX structure via regex |
 | Repository map | PageRank over identifier definitions/references (approximate graph) |
 | Possible symbol references | Literal search approximation across languages |
@@ -145,7 +250,13 @@ and invalidation condition; automatic dependency-change invalidation is pending.
 
 ## Execution boundaries
 
-Use trusted repositories in a disposable environment. Common sensitive paths, traversal, symlinks, and conventional test-file edits are blocked by context tools, but this is **not an OS sandbox or comprehensive secret scanner**. Test commands execute repository code with normal user permissions; a malicious project can bypass file-access restrictions. The model cannot choose arbitrary shell commands. Edits require a unique exact match and a current file hash. Tool text is bounded, and test subprocess groups are terminated on timeout.
+Use trusted repositories in a disposable environment. Common sensitive paths, traversal, symlinks, and conventional test-file edits are blocked by context tools, but this is **not an OS sandbox or comprehensive secret scanner**. Test commands execute repository code with normal user permissions; a malicious project can bypass file-access restrictions. The model cannot choose arbitrary shell commands. Exact edits require a unique match and a current file hash; unified diffs check the read snapshot and use hunk positions to disambiguate repeated text. Writes are rechecked before replacement, but concurrent processes can still race app-level path checks. Batches stage contents and backups first; commit failures attempt rollback and explicitly report incomplete rollback with retained backup paths. They are not crash-atomic across files. Tool text is bounded, and subprocess groups are terminated on timeout or interruption. Background command jobs belong to one task and are cleaned up when it ends. Every command invocation needs fresh approval; piped stdin is not an approval channel.
+
+Web URL guards block literal private addresses (including legacy numeric IPv4 forms),
+but do not resolve and pin DNS addresses. Private DNS destinations and rebinding
+remain open risks. Untrusted-content labels are prompt policy, not proof that a model
+will ignore injected instructions. Configured gateway/search credentials are refused
+in web inputs and redacted from web transport errors; this is not a general secret scanner.
 
 ## Next milestones
 

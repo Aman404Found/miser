@@ -7,6 +7,7 @@ module only routes its output into the rendered transcript and feeds keys back.
 """
 
 import sys
+import json
 import threading
 import time
 from pathlib import Path
@@ -48,16 +49,26 @@ class TuiApp:
         self._approval_result = False
         self._approval_diff = ""
         self._approval_is_command = False
+        self._approval_label = "command"
+        self.question = None
+        self._question_event = None
+        self._question_answer = None
+        self._question_options = []
+        self._question_draft = ("", 0)
         self._last_size = None
         self.glyphs = theme.symbols()
         self._load_history()
 
         terminal.spinner.enabled = False
         terminal.write = self.append_output
+        terminal.markdown_output = self.append_markdown
+        terminal.markdown_stream_factory = self.markdown_stream
         terminal.cancel_event = threading.Event()
         terminal.activity_listener = self.on_activity
         terminal.prompt_edit_approval = self.request_approval
         terminal.prompt_command_approval = self.request_command_approval
+        terminal.prompt_mcp_approval = self.request_mcp_approval
+        terminal.prompt_clarification = self.request_clarification
         for text in initial or []:
             self.append_output(text)
 
@@ -90,13 +101,29 @@ class TuiApp:
 
     # -- transcript --------------------------------------------------------
 
+    def append_markdown(self, source):
+        with self._lock:
+            self.transcript.append(render.MarkdownBlock(source))
+            self.dirty = True
+
+    def markdown_stream(self, width):
+        block = render.MarkdownBlock()
+        with self._lock:
+            self.transcript.append(block)
+
+        def replace(source):
+            with self._lock:
+                block.source = source
+                self.dirty = True
+
+        return render.MarkdownStream(lambda _: None, width, self.glyphs, replace=replace)
+
     def _max_width(self):
         width, _ = self.screen_io.size()
         return screen.content_width(width)
 
     def append_output(self, text=""):
-        # Keep full lines here; the layout crops them to the content column, so
-        # widening the terminal does not leave permanently truncated rows.
+        # Preserve full lines; layout reflows them to the current content column.
         value = str(text).rstrip("\n")
         with self._lock:
             if value == "":
@@ -130,6 +157,11 @@ class TuiApp:
                 tests = "interrupted"
         with self._lock:
             transcript = list(self.transcript)
+        tokens = ""
+        if self.terminal.session_model_requests:
+            known = self.terminal.session_provider_tokens
+            unknown = getattr(self.terminal, "session_unknown_usage", 0)
+            tokens = "usage unknown" if unknown and not known else f"{known:,} tok" + (" + unknown" if unknown else "")
         return screen.UIState(
             width=width,
             height=height,
@@ -139,8 +171,7 @@ class TuiApp:
             budget=self.terminal.budget,
             tasks=self.terminal.session_tasks_count,
             requests=self.terminal.session_model_requests,
-            tokens=(f"{self.terminal.session_provider_tokens:,} tok"
-                    if self.terminal.session_model_requests else ""),
+            tokens=tokens,
             tests=tests,
             approvals=self.terminal.confirm_edits,
             input_text=self.input.value(),
@@ -156,10 +187,13 @@ class TuiApp:
         )
 
     def draw(self):
+        # Clear before snapshotting: output arriving during a slow render must
+        # retain its dirty flag so the final streamed update is never lost.
+        with self._lock:
+            self.dirty = False
         self.terminal.width_override = self._max_width()
         state = self.ui_state()
         self.screen_io.draw(screen.render(state))
-        self.dirty = False
         self._last_size = (state.width, state.height)
 
     # -- interaction -------------------------------------------------------
@@ -198,30 +232,45 @@ class TuiApp:
         self.append_output("")
         self.append_output(render.approval_header(path, diff, width))
         self.append_output(render.render_diff(diff, width, max_lines=40, glyphs=self.glyphs))
-        self._approval_event = threading.Event()
+        event = threading.Event()
+        self._approval_event = event
         self._approval_result = False
         self._approval_diff = diff
         self._approval_is_command = False
         self.approval = f"apply edit to {path}?   [y]es  [n]o  [a]ll  [d]iff"
         self.status = "awaiting approval"
         self.dirty = True
-        self._approval_event.wait()
+        while not event.wait(0.1):
+            if self.terminal.cancel_event.is_set() or not self.running:
+                self._approval_result = False
+                break
         self.approval = None
         self.dirty = True
         return self._approval_result
 
     def request_command_approval(self, command):
+        return self._request_call_approval(f"the agent asks to run: {command}", "command")
+
+    def request_mcp_approval(self, server, tool, arguments):
+        return self._request_call_approval(
+            f"External MCP call: {server}/{tool}\nArguments: {json.dumps(arguments, ensure_ascii=False)}", "external MCP call")
+
+    def _request_call_approval(self, description, label):
         width = self._max_width()
         self.append_output("")
-        self.append_output(render.notice(f"the agent asks to run: {command}", width, self.glyphs))
+        self.append_output(description)
         self._approval_event = threading.Event()
         self._approval_result = False
         self._approval_diff = ""
         self._approval_is_command = True
-        self.approval = "run this command?   [y]es  [n]o  [a]lways"
-        self.status = "awaiting command approval"
+        self._approval_label = label
+        self.approval = f"allow this {label}?   [y]es  [n]o"
+        self.status = f"awaiting {label} approval"
         self.dirty = True
-        self._approval_event.wait()
+        while not self._approval_event.wait(0.1):
+            if self.terminal.cancel_event.is_set() or not self.running:
+                self._approval_result = False
+                break
         self.approval = None
         self._approval_is_command = False
         self.dirty = True
@@ -232,22 +281,81 @@ class TuiApp:
         if self._approval_event is not None:
             self._approval_event.set()
 
+    def request_clarification(self, question, options):
+        """Pause the worker; the main raw-key loop collects an answer in the composer."""
+        event = threading.Event()
+        self._question_event = event
+        self._question_answer = None
+        self._question_options = list(options)
+        draft, cursor = self.input.value(), self.input.cursor
+        self._question_draft = (draft, cursor)
+        self.input.clear()
+        self.append_output(render.notice(theme.clean(question), self._max_width(), self.glyphs))
+        for index, option in enumerate(options, 1):
+            self.append_output(f"  {index}. {theme.clean(option)}")
+        self.approval = "Type an answer or choice number · Enter to send · Esc to leave unanswered"
+        self.question = question
+        self.status = "waiting for your answer"
+        self.dirty = True
+        try:
+            while not event.wait(0.1):
+                if self.terminal.cancel_event.is_set() or not self.running:
+                    return None
+            return self._question_answer
+        finally:
+            # The key thread restores the draft before releasing an answered
+            # question. Do not overwrite characters typed after that release.
+            if self.question is not None:
+                self.input.set_text(draft, cursor)
+            self.question = None
+            self.approval = None
+            self.dirty = True
+
+    def _answer_question(self, key):
+        if key.name in {"ctrl+c", "ctrl+d", "eof", "escape"}:
+            if key.name != "escape":
+                self.terminal.cancel_event.set()
+            if key.name == "eof":
+                self.running = False
+            self._question_answer = None
+        elif key.name == "enter":
+            answer = self.input.value().strip()
+            if not 1 <= len(answer) <= 2000:
+                self.status = "Enter an answer of 1–2000 characters"
+                self.dirty = True
+                return True
+            if answer.isdecimal() and 1 <= int(answer) <= len(self._question_options):
+                answer = self._question_options[int(answer) - 1]
+            self._question_answer = answer
+        elif key.name == "tab":
+            return True
+        else:
+            return False
+        self.input.set_text(*self._question_draft)
+        self.question = None
+        self.approval = None
+        self._question_event.set()
+        self.dirty = True
+        return True
+
     def _handle_approval_key(self, key):
+        if key.name in {"eof", "ctrl+d"}:
+            self.terminal.cancel_event.set()
+            if key.name == "eof":
+                self.running = False
+            self._resolve_approval(False)
+            return
         if self._approval_is_command:
             width = self._max_width()
             if key.name == "ctrl+c":
                 self.terminal.cancel_event.set()
-                self.append_output(render.notice("command rejected", width, self.glyphs))
+                self.append_output(render.notice(f"{self._approval_label} rejected", width, self.glyphs))
                 self._resolve_approval(False)
             elif (key.name == "char" and key.text.lower() == "y") or key.name == "enter":
-                self.append_output(render.notice("command approved", width, self.glyphs))
+                self.append_output(render.notice(f"{self._approval_label} approved", width, self.glyphs))
                 self._resolve_approval(True)
-            elif key.name == "char" and key.text.lower() == "a":
-                self.append_output(render.notice("exact command approved for this session",
-                                                 width, self.glyphs))
-                self._resolve_approval("always")
             elif (key.name == "char" and key.text.lower() == "n") or key.name == "escape":
-                self.append_output(render.notice("command rejected", width, self.glyphs))
+                self.append_output(render.notice(f"{self._approval_label} rejected", width, self.glyphs))
                 self._resolve_approval(False)
             return
         if key.name == "ctrl+c":
@@ -288,7 +396,13 @@ class TuiApp:
         self.suggestions = []
         self.scroll = 0
         self.mode = "conversation"
+        if self.transcript:
+            self.append_output("")
+        start = len(self.transcript)
         self.append_output(render.user_block(text, self._max_width(), self.glyphs))
+        with self._lock:
+            for row in self.transcript[start:]:
+                row.style = Style(color=theme.CYAN, bgcolor=screen.COMPOSER_BG)
         if not text.startswith("/"):
             self.append_output("")
         if text.startswith("/"):
@@ -336,14 +450,16 @@ class TuiApp:
 
     def _scroll(self, amount):
         with self._lock:
-            total = len(self.transcript)
+            total = len(screen.reflow_transcript(self.transcript, self._max_width()))
         self.scroll = max(0, min(self.scroll + amount, max(0, total - 1)))
         self.dirty = True
 
     def handle_key(self, key):
         if key is None:
             return
-        if self.approval is not None:
+        if self.question is not None and self._answer_question(key):
+            return
+        if self.approval is not None and self.question is None:
             self._handle_approval_key(key)
             return
         name = key.name
@@ -427,6 +543,9 @@ class TuiApp:
         finally:
             self.screen_io.leave()
             self.terminal.cancel_event.set()
+            self._resolve_approval(False)
+            if self._question_event is not None:
+                self._question_event.set()
             self.terminal.spinner.stop()
         self._save_history()
         try:

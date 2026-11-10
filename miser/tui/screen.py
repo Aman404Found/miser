@@ -10,16 +10,12 @@ from dataclasses import dataclass, field
 
 from rich.style import Style
 from rich.text import Text
+from rich.console import Console
+from ..ui import theme, render as presentation
 
-BG = "#0b0c0e"
-TEXT = "#e6e7eb"
-MUTED = "#8b8f9a"
-FAINT = "#3b3f49"
-ACCENT = "#4f8cff"
-COMPOSER_BG = "#15171c"
-OK = "#34d399"
-BAD = "#f87171"
-WARN = "#fbbf24"
+BG, TEXT, MUTED, FAINT = theme.BG, theme.TEXT, theme.MUTED, theme.FAINT
+ACCENT, COMPOSER_BG = theme.ACCENT, theme.SURFACE
+OK, BAD, WARN = theme.OK, theme.BAD, theme.WARN
 
 
 def _style(color=TEXT, bg=BG, bold=False, italic=False, reverse=False):
@@ -106,15 +102,15 @@ def placed(content, left, width):
     return fit(out, width)
 
 
-MAX_CONTENT_WIDTH = 92
+MAX_CONTENT_WIDTH = 140
 
 
 def content_width(width):
-    """One readable column: generous gutters, never wider than 92 cells."""
+    """A shared workspace column, with restrained gutters and room for code."""
     width = max(0, int(width))
     if width <= 44:
         return max(20, width - 2)
-    return min(MAX_CONTENT_WIDTH, max(20, width - 8))
+    return min(MAX_CONTENT_WIDTH, max(20, width - 4))
 
 
 def content_left(width):
@@ -129,7 +125,7 @@ def column_row(content, width):
 # -- logo ------------------------------------------------------------------
 
 _FONT = {
-    "M": ["██  ██", "███ ██", "██ ███", "██  ██", "██  ██"],
+    "M": ["██   ██", "███ ███", "██ █ ██", "██   ██", "██   ██"],
     "I": ["██████", "  ██  ", "  ██  ", "  ██  ", "██████"],
     "S": ["██████", "██    ", "██████", "    ██", "██████"],
     "E": ["██████", "██    ", "█████ ", "██    ", "██████"],
@@ -164,12 +160,16 @@ def _wrap_rows(text, width):
         else:
             position = 0
             while position < len(hard):
-                if len(hard) - position <= width:
+                limit, cells = position, 0
+                while limit < len(hard) and cells + theme.display_width(hard[limit]) <= width:
+                    cells += theme.display_width(hard[limit])
+                    limit += 1
+                if limit == len(hard):
                     rows.append((hard[position:], index + position, index + len(hard)))
                     break
-                cut = hard.rfind(" ", position, position + width)
+                cut = hard.rfind(" ", position, limit + 1)
                 if cut <= position:
-                    cut = position + width
+                    cut = max(position + 1, limit)
                 rows.append((hard[position:cut].rstrip(), index + position, index + cut))
                 position = cut
                 while position < len(hard) and hard[position] == " ":
@@ -187,9 +187,11 @@ def _composer_contents(state, inner, placeholder):
         return [_inner_pad(content, inner)], 0
     rows = _wrap_rows(state.input_text, inner)
     cursor = max(0, min(state.cursor, len(state.input_text)))
+    if cursor == len(state.input_text) and theme.display_width(rows[-1][0]) >= inner:
+        rows.append(("", cursor, cursor))
     cursor_row = len(rows) - 1
     for row_index, (_, start, end) in enumerate(rows):
-        if start <= cursor <= end:
+        if start <= cursor < end or (cursor == end and row_index == len(rows) - 1):
             cursor_row = row_index
             break
     rendered = []
@@ -232,6 +234,13 @@ def composer(state, card_width, placeholder, show_meta=True):
         start = min(max(0, cursor_row - 3), len(contents) - 4)
         contents = contents[start:start + 4]
     lines = [_card_row(content, card_width) for content in contents]
+    if state.height >= 16:
+        top = Text("╭" + "─" * max(0, card_width - 2) + "╮", style=_style(color=ACCENT))
+        label = " Enter send · Ctrl+J newline "
+        bottom = Text("╰" + "─" * max(0, card_width - 2) + "╯", style=_style(color=FAINT))
+        if card_width > len(label) + 6:
+            bottom = Text("╰─" + label + "─" * (card_width - len(label) - 3) + "╯", style=_style(color=FAINT))
+        lines = [fit(top, card_width)] + lines + [fit(bottom, card_width)]
     if show_meta:
         lines.append(_card_row(_inner_pad(Text("", style=_style(bg=COMPOSER_BG)), inner), card_width))
         meta = Text(style=_style(bg=COMPOSER_BG))
@@ -268,45 +277,13 @@ def _short_workspace(workspace):
 
 
 def _welcome(state):
-    width, height = state.width, state.height
-    compact = height < 18
-    logo = logo_lines(width)
-    tagline = centered(
-        Text("focused coding agent  ·  type a task or /help", style=_style(color=MUTED)),
-        width,
-    )
-    card_width = content_width(width)
-    card = [column_row(row, width) for row in composer(state, card_width, 'Ask anything… "Fix a failing test in pricing.py"', show_meta=True)]
-
-    workspace = _short_workspace(state.workspace)
-    hints = "tab complete   ctrl+j newline   ctrl+d exit"
-    if card_width < 68:
-        hints = "tab complete · ctrl+d exit"
-    footer_parts = [("  ", None), (workspace, MUTED_STYLE)]
-    if 2 + len(workspace) + 1 + len(hints) <= card_width:
-        footer_parts.append((" " * (card_width - 2 - len(workspace) - len(hints)), None))
-        footer_parts.append((hints, MUTED_STYLE))
-    footer = column_row(line(footer_parts, card_width), width)
-
-    block = list(logo)
-    if not compact:
-        block.append(blank(width))
-        block.append(tagline)
-        block.append(blank(width))
-    else:
-        block.append(blank(width))
-    block.extend(card)
-    block.append(blank(width))
-    block.append(footer)
-    if state.suggestions:
-        block.append(
-            centered(Text("   ".join(state.suggestions[:6]), style=_style(color=FAINT)), width)
-        )
-
-    top = 0 if compact else max(0, (height - len(block)) // 2)
-    lines = [blank(width) for _ in range(top)]
-    lines.extend(block)
-    return lines
+    # Same persistent layout as an active session, without a decorative banner.
+    from dataclasses import replace
+    intro = [Text("Ready when you are.", style=_style(TEXT, bold=True)),
+             Text("MISER · focused coding agent. Describe a change or ask about code.", style=_style(MUTED)),
+             Text(f"{_short_workspace(state.workspace)}  ·  {state.budget // 1000}k budget", style=_style(MUTED)),
+             Text("tab complete · /help commands · /status session · /model choose model", style=_style(FAINT))]
+    return _conversation(replace(state, mode="conversation", transcript=intro))
 
 
 # -- conversation ----------------------------------------------------------
@@ -323,6 +300,8 @@ def _header(state, width):
     left.append("MISER", style=_style(color=TEXT, bold=True))
     left.append("  ", style=BG_STYLE)
     left.append(state.model or "no model", style=_style(color=MUTED))
+    if inner >= 110 and state.workspace:
+        left.append("  ·  " + _short_workspace(state.workspace), style=_style(color=MUTED))
     right_bits = []
     if state.scroll:
         right_bits.append(f"↑ {state.scroll} lines")
@@ -330,6 +309,7 @@ def _header(state, width):
         right_bits.append(state.tokens)
     right_bits.append(f"{state.tasks} task" + ("" if state.tasks == 1 else "s"))
     right = Text("  ·  ".join(right_bits), style=_style(color=MUTED))
+    left.truncate(max(5, inner - right.cell_len - 2), overflow="ellipsis")
     gap = max(2, inner - left.cell_len - right.cell_len)
     row = Text(style=BG_STYLE)
     row.append(left)
@@ -351,7 +331,7 @@ def _status(state):
         parts.append((state.tokens, MUTED_STYLE))
     if state.tests:
         parts.append(("  ·  ", FAINT_STYLE))
-        color = OK if "pass" in state.tests.lower() else BAD
+        color = OK if state.tests == "tests passed" else BAD
         parts.append((state.tests, _style(color=color)))
     return parts
 
@@ -365,17 +345,36 @@ def _footer(state, width):
     elif inner < 90:
         hints = "PgUp history · ctrl+d exit"
     else:
-        hints = "tab complete · PgUp history · ctrl+d exit"
+        hints = "/help  /status  /diff  /test  /receipt"
     left = Text(hints, style=FAINT_STYLE)
     right = Text(style=_style(bg=BG))
     for value, style in _status(state):
         right.append(value, style=style)
+    gap = max(1, inner - left.cell_len - right.cell_len)
+    left.truncate(max(0, inner - right.cell_len - 1), overflow="ellipsis")
     gap = max(1, inner - left.cell_len - right.cell_len)
     row = Text(style=BG_STYLE)
     row.append(left)
     row.append(" " * gap, style=BG_STYLE)
     row.append(right)
     return column_row(fit(row, inner), width)
+
+
+def reflow_transcript(entries, inner):
+    """Reflow preserved transcript text; scrolling counts visible rows after resize."""
+    rows = []
+    console = None
+    for entry in entries:
+        if isinstance(entry, presentation.MarkdownBlock):
+            rows.extend(Text.from_ansi(row, style=_style()) for row in entry.lines(inner))
+            continue
+        if entry.cell_len <= inner:
+            rows.append(entry)
+        else:
+            if console is None:
+                console = Console(width=inner, color_system=None)
+            rows.extend(entry.wrap(console, inner, overflow="fold", no_wrap=False))
+    return rows
 
 
 def _conversation(state):
@@ -393,15 +392,19 @@ def _conversation(state):
 
     viewport = height - len(lines) - len(extras) - len(card) - 1 - 1
     viewport = max(0, viewport)
-    entries = state.transcript
+    # Each logical entry occupies at least one row. This suffix is sufficient
+    # for the viewport without reflowing the entire session on every repaint.
+    needed = viewport + max(0, state.scroll)
+    entries = reflow_transcript(state.transcript[-needed:] if needed else [], inner)
     end = max(0, len(entries) - max(0, state.scroll))
     start = max(0, end - viewport)
     window = entries[start:end]
     transcript_rows = []
     for entry in window:
-        row = Text(style=BG_STYLE)
+        background = entry.style.bgcolor.name if isinstance(entry.style, Style) and entry.style.bgcolor else BG
+        row = Text(style=_style(bg=background))
         row.append(entry)
-        transcript_rows.append(column_row(fit(row, inner), width))
+        transcript_rows.append(column_row(fit(row, inner, bg=background), width))
     # Start a conversation at the top; once it overflows, keep the newest lines
     # anchored above the composer (chat-style, with explicit scrolling).
     filler = max(0, viewport - len(window))

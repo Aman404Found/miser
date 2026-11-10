@@ -6,6 +6,8 @@ import fnmatch
 import hashlib
 import os
 import re
+import stat
+import tempfile
 from pathlib import Path
 
 
@@ -141,10 +143,13 @@ def parse_unified_diff(patch_text):
                 hunk_body.append(lines[i])
                 i += 1
             old_lines, new_lines = [], []
+            previous_tag = None
             for raw in hunk_body:
                 if raw.startswith("\\"):
                     # "\ No newline at end of file" applies to the preceding line.
-                    for side in (old_lines, new_lines):
+                    sides = ((old_lines,) if previous_tag == "-" else
+                             (new_lines,) if previous_tag == "+" else (old_lines, new_lines))
+                    for side in sides:
                         if side:
                             side[-1] = side[-1].rstrip("\r\n")
                     continue
@@ -153,6 +158,7 @@ def parse_unified_diff(patch_text):
                     new_lines.append(raw)
                     continue
                 tag, body = raw[:1], raw[1:]
+                previous_tag = tag
                 if tag == "-":
                     old_lines.append(body)
                 elif tag == "+":
@@ -266,7 +272,8 @@ class Workspace:
         path = self.path(name)
         if path.stat().st_size > 250_000:
             raise ValueError("File exceeds 250 KB; narrow the task outside MISER first")
-        value = path.read_text(encoding="utf-8")
+        with path.open(encoding="utf-8", newline="") as handle:
+            value = handle.read()
         if "\x00" in value:
             raise ValueError("Binary file")
         return value
@@ -568,10 +575,18 @@ class Workspace:
             raise ValueError(f"'{path}' already exists. Use zoom then edit (or apply_patch) instead")
         if not target.parent.is_dir():
             raise ValueError(f"Directory for '{path}' does not exist; MISER will not create directories")
+        created = False
         try:
-            target.write_text(content, encoding="utf-8")
-        except OSError as error:
-            raise RuntimeError(f"Could not create '{path}': {error}") from error
+            # Exclusive creation also refuses a file/symlink appearing after exists().
+            with target.open("x", encoding="utf-8", newline="") as handle:
+                created = True
+                handle.write(content)
+        except BaseException as error:
+            if created:
+                self.path(path).unlink()
+            if isinstance(error, OSError):
+                raise RuntimeError(f"Could not create '{path}': {error}") from error
+            raise
         self.originals[path] = None  # sentinel: the file did not exist before this session
         self.last_written[path] = content
         self.snapshots[path] = content
@@ -622,15 +637,13 @@ class Workspace:
 
         if replacement == current:
             raise ValueError("Patch makes no change")
-        self.originals.setdefault(path, current)
-        self.path(path).write_text(replacement, encoding="utf-8")
-        self.last_written[path] = replacement
-        self.modified.add(path)
+        replacement = self._line_endings(current, replacement)
+        self.write_batch({path: replacement}, expected={path: current})
         return {"path": path, "version": digest(replacement), "edited": True}
 
     def edit_batch(self, edits: list[dict]):
         """
-        Atomically apply multiple edits across one or more files.
+        Validate multiple edits before staging replacements across files.
         Each edit dict must contain: 'path', 'old', 'new', 'expected_version'.
         If any edit fails validation or cannot be matched, NO files on disk are modified.
         """
@@ -640,6 +653,7 @@ class Workspace:
             raise ValueError("Edit batch exceeds 10 operations limit")
 
         staged_files = {}
+        expected = {}
 
         # 1. First pass: validate all snapshots, versions, and match replacements in memory
         for idx, item in enumerate(edits):
@@ -657,8 +671,11 @@ class Workspace:
                 current_text = staged_files[path]
             else:
                 current_text = self.text(path)
-                if digest(current_text) != expected_ver:
-                    raise ValueError(f"File '{path}' changed since read (edit #{idx + 1}). Recall or zoom before editing")
+                expected[path] = current_text
+            # Every operation names the version read before this batch, including
+            # later replacements in a file already staged by an earlier operation.
+            if digest(expected[path]) != expected_ver:
+                raise ValueError(f"File '{path}' changed since read (edit #{idx + 1}). Recall or zoom before editing")
 
             if not old:
                 raise ValueError(f"Old text in edit #{idx + 1} for '{path}' must be nonempty")
@@ -684,17 +701,26 @@ class Workspace:
             if replacement == current_text:
                 raise ValueError(f"Edit #{idx + 1} makes no change to '{path}'")
 
-            staged_files[path] = replacement
+            staged_files[path] = self._line_endings(current_text, replacement)
 
         # 2. Second pass: write every staged file, restoring all of them on failure.
-        return self.write_batch(staged_files)
+        return self.write_batch(staged_files, expected=expected)
 
-    def write_batch(self, staged):
+    @staticmethod
+    def _line_endings(current, replacement):
+        """Keep uniform CRLF files uniform when model replacement text uses LF."""
+        if "\r\n" in current and "\n" not in current.replace("\r\n", ""):
+            return replacement.replace("\r\n", "\n").replace("\n", "\r\n")
+        return replacement
+
+    def write_batch(self, staged, expected=None):
         """
-        Write fully-built new file contents for one or more files as one transaction.
+        Stage complete files, then replace them with best-effort rollback on failure.
         `staged` maps relative path -> complete new file text. Every file must have been
-        read with zoom. If any write fails, files written by this call are restored to
-        their contents from before the call.
+        read with zoom. Validation/staging failures leave destinations untouched.
+        Replacements are atomic per file, not across files or crashes. Rollback
+        failures are reported with retained backup paths. App guards cannot prevent
+        a hostile same-user process racing the final path check and os.replace.
         """
         if not staged:
             raise ValueError("Write batch must contain at least one file")
@@ -703,33 +729,70 @@ class Workspace:
             if path not in self.snapshots:
                 raise ValueError(f"Read '{path}' with zoom before editing")
             current = self.text(path)
+            if current != (expected[path] if expected is not None else self.snapshots[path]):
+                raise ValueError(f"File '{path}' changed since read; recall or zoom before editing")
             if current == new_text:
                 raise ValueError(f"Patch makes no change to '{path}'")
             originals[path] = current
 
-        previously_modified = set(self.modified)
-        previous_written = dict(self.last_written)
+        pending, backups = {}, {}
         written = []
+        retained = set()
+
+        def stage(path, text):
+            target = self.path(path)
+            fd, name = tempfile.mkstemp(prefix=target.name + ".", suffix=".miser-tmp",
+                                        dir=target.parent)
+            os.close(fd)
+            temp = Path(name)
+            try:
+                temp.write_text(text, encoding="utf-8", newline="")
+                temp.chmod(stat.S_IMODE(target.stat().st_mode))
+            except BaseException:
+                temp.unlink(missing_ok=True)
+                raise
+            return temp
+
         try:
+            # Allocate both new contents and rollback copies before changing any file.
             for path, new_text in staged.items():
-                self.originals.setdefault(path, originals[path])
-                self.path(path).write_text(new_text, encoding="utf-8")
-                self.last_written[path] = new_text
+                pending[path] = stage(path, new_text)
+                backups[path] = stage(path, originals[path])
+            for path in staged:
+                if self.text(path) != originals[path]:
+                    raise ValueError(f"File '{path}' changed while staging edits")
+            for path, new_text in staged.items():
+                if self.text(path) != originals[path]:
+                    raise ValueError(f"File '{path}' changed before replacement")
+                os.replace(pending[path], self.path(path))
                 written.append(path)
-                self.modified.add(path)
-        except OSError as error:
-            for path in written:
+        except BaseException as error:
+            failures = []
+            for path in reversed(written):
                 try:
-                    self.path(path).write_text(originals[path], encoding="utf-8")
-                    if path in previous_written:
-                        self.last_written[path] = previous_written[path]
-                    else:
-                        self.last_written.pop(path, None)
-                    if path not in previously_modified:
-                        self.modified.discard(path)
-                except OSError:
-                    continue
-            raise RuntimeError(f"Atomic batch write failed, rolled back changes: {error}") from error
+                    if self.text(path) != staged[path]:
+                        raise ValueError("File changed externally during rollback")
+                    os.replace(backups[path], self.path(path))
+                except (OSError, ValueError) as rollback_error:
+                    retained.add(backups[path])
+                    failures.append(f"{path}: {rollback_error}; backup: {backups[path]}")
+                    self.originals.setdefault(path, originals[path])
+                    self.last_written[path] = staged[path]
+                    self.modified.add(path)
+            if failures:
+                raise RuntimeError("Batch failed; rollback incomplete: " + "; ".join(failures)) from error
+            if isinstance(error, OSError):
+                raise RuntimeError(f"Batch write failed, rolled back changes: {error}") from error
+            raise
+        finally:
+            for temp in (*pending.values(), *backups.values()):
+                if temp not in retained:
+                    temp.unlink(missing_ok=True)
+
+        for path, new_text in staged.items():
+            self.originals.setdefault(path, originals[path])
+            self.last_written[path] = new_text
+            self.modified.add(path)
 
         return {"edited": True, "files": sorted(staged),
                 "versions": {path: digest(text) for path, text in staged.items()}}
@@ -755,27 +818,31 @@ class Workspace:
         else:
             raise ValueError(f"Hunk at line {old_start} matches {len(matches)} locations in '{path}'; "
                              "include more context lines to disambiguate")
-        if old_lines and old_lines[-1].endswith(("\n", "\r")) and new_lines \
-                and not new_lines[-1].endswith(("\n", "\r")):
-            new_lines[-1] += "\n"
         return lines[:index] + new_lines + lines[index + size:]
 
     def apply_unified_diff(self, patch_text: str):
         """
-        Apply a standard git-style unified diff atomically across one or more files.
+        Apply a standard git-style unified diff with staged writes and rollback.
         Headers must reference existing files that were read with zoom. Every hunk is
         verified in memory first; if any hunk fails, no file is written.
         """
         file_patches = parse_unified_diff(patch_text)
         staged = {}
+        expected = {}
         for file_path, hunks in file_patches:
             if file_path not in self.snapshots:
                 raise ValueError(f"Read '{file_path}' with zoom before applying patch")
-            lines = self.text(file_path).splitlines(keepends=True)
+            current = self.text(file_path)
+            if current != self.snapshots[file_path]:
+                raise ValueError(f"File '{file_path}' changed since read; recall or zoom before patching")
+            expected[file_path] = current
+            lines = staged.get(file_path, current).splitlines(keepends=True)
+            offset = 0
             for old_start, old_block, new_block in hunks:
-                lines = self._apply_hunk(lines, old_start, old_block, new_block, file_path)
+                lines = self._apply_hunk(lines, old_start + offset, old_block, new_block, file_path)
+                offset += len(new_block.splitlines()) - len(old_block.splitlines())
             staged[file_path] = "".join(lines)
-        return self.write_batch(staged)
+        return self.write_batch(staged, expected=expected)
 
     def blast_radius(self, symbol):
         result = self.search(symbol, limit=40)

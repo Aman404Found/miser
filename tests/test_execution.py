@@ -66,7 +66,7 @@ class ExecutionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             runner.run(["python3", "-m", "unittest", "--help"])
 
-    def test_always_suppresses_repeat_prompt_for_exact_argv(self):
+    def test_legacy_always_answer_does_not_suppress_repeat_prompt(self):
         seen = []
 
         def approval(command):
@@ -76,7 +76,7 @@ class ExecutionTests(unittest.TestCase):
         runner = self.supervisor(approval=approval)
         runner.run(["python3", "-m", "unittest", "--help"])
         runner.run(["python3", "-m", "unittest", "--help"])
-        self.assertEqual(len(seen), 1)
+        self.assertEqual(len(seen), 2)
 
     def test_background_start_status_and_stop(self):
         (self.repo / "fixture_sleep.py").write_text(

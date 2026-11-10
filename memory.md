@@ -4,7 +4,7 @@ Living log of what has been done, what is verified, and what is next.
 Update this file at the end of every work session. Newest entries at the top of
 "Session log"; keep "Current state" accurate rather than appending forever.
 
-Last updated: 2026-11-09 (session 9)
+Last updated: 2026-11-10 (current-state consolidation and actionable handover)
 
 ---
 
@@ -27,21 +27,133 @@ Last updated: 2026-11-09 (session 9)
 
 ## Current state
 
-- Python 3.12.3, `requires-python >=3.11`, no runtime dependencies.
-- `miser/` ≈ 27 files / ~5.8k LOC.
-- **Tests: 249 passing** — `python3 -m unittest discover -s tests -q` (exit 0, ~7.9s).
-- **Tools: 18** — `repo_map`, `list_files`, `find_files`, `search`, `zoom`, `recall`,
+- Python 3.12.3, `requires-python >=3.11`, no required runtime dependencies for
+  the core CLI. Optional `tui` now supplies Textual >=8.2.8,<9; `ui-test` adds pyte
+  only for development. Prepared `.venv` has Textual 8.2.8, Rich 15.0.0, pyte 0.8.2.
+- **Tests: 430 passing** — latest full suite, exit 0, 81.431s. This increment
+  reproduced 417 in 89.225s before changes, then added ten latency/policy tests and
+  three native UI regressions. Native rebuild previously passed 417 in 72.571s;
+  its baseline was 399 in 21.118s. Earlier counts: baseline 249 at `6898ab5`, audit 290,
+  local reads/branding 299, profiles/questions 317, knowledge 337, MCP 360,
+  context/layout 376, MCP readiness 378, earlier Rich redesign 399. Native rebuild
+  adds 16 widget/backend regressions, one actual CLI PTY regression and one
+  deterministic process-cleanup probe regression. Run the full
+  suite with `.venv/bin/python` and optional UI/test extras installed.
+- **Tool catalog: 19** — `repo_map`, `list_files`, `find_files`, `search`, `zoom`, `recall`,
   `read_many`, `write_file`, `edit`, `edit_batch`, `apply_patch`, `blast_radius`,
-  `run_tests`, `verify_claim`, `run_command`, `write_todos`, `web_search`, `fetch_url`.
+  `run_tests`, `verify_claim`, `run_command`, `write_todos`, `web_search`, `fetch_url`, `ask_user`.
+- **Local file-display route:** explicit requests such as `read Readme.md file and
+  print first line` bypass the model, acceptance tests and shell in both line/TUI
+  task entry points. Paths still use Workspace guards; case fallback is unique-only,
+  reads are bounded and a local receipt is written. This host action is separate
+  from the model tool catalog. Compound requests use the appropriate task profile.
+- **Branding:** MISER uses compact plain-text branding and an assistant diamond;
+  the giant block-font welcome banner has been replaced by the persistent session
+  layout. Historical M/N confusion motivated the earlier glyph fix. Name unchanged.
+- **Recent-turn context:** one shared line/TUI task entry records every submitted
+  non-slash turn, including local reads, greetings, agent tasks and failures. The
+  original bug stored only general-question pairs, skipping intervening file reads.
+  Exact previous-message queries now return the latest user turn locally. Other
+  model requests receive the latest three pairs; no past tools are replayed. Store
+  bounds: six pairs / 12,000 serialized UTF-8 bytes; 1,500 UTF-8 bytes per message
+  plus explicit truncation marker. History is live-session only; --resume restores
+  metrics, not full conversation. Project facts remain a separate feature.
+- **Native UI:** the actual CLI now selects `miser.tui.textual_app.MiserApp`.
+  Launch `.venv/bin/python -m miser chat . --tui`. It uses Textual native layout,
+  Markdown, scrolling, editor and modal approvals. Header/footer/composer persist;
+  sidebar hides below 118 columns. Streaming replaces a single native widget per
+  request. Original sources/patches remain separate from display sanitization.
+  Links are inspected as data, never opened automatically. Diffs are collapsible
+  with patch-line numbering, unified hunk coordinates and change counts. Legacy
+  Rich row UI remains for old tests, not a CLI launch route. `--no-tui` and
+  noninteractive commands retain the line interface; forced --tui fails clearly
+  when unavailable. Prompt history is bounded private JSON with multiline support.
+- **UI verification:** actual CLI PTY with simulated provider covers 80×24,
+  120×36, 160×45, Markdown streaming, scrolling, multiline draft, real failing tests,
+  Ctrl+C refusal/no write, fresh approved edit, real passing tests, receipts and
+  clean exit. Separate unmodified CLI PTY exercises hello/local read/error/exit
+  without provider mocks or model/test events. Native headless tests cover fresh
+  command/MCP approval callbacks, ask_user, approve-all edits and re-enabling prompts,
+  unknown usage, literal diff paths, history and host-restricted wakeups.
+  See docs/terminal-ui.md and docs/ui/native-*.png. Provider outputs in the coding
+  workflow are simulated; no successful live gateway run or latency gain verified.
+- **Restricted-host compatibility:** socketpair send fails EPERM here, preventing
+  asyncio cross-thread wakeups/executor shutdown. A capability-gated public-loop
+  polling timer handles only EPERM/EACCES; normal hosts retain native wakeups.
+  No listener is bound. This does not change execution policy or create a sandbox.
+- **Capability profiles:** coding exposes all 19 tools by default and retains required-policy acceptance
+  verification/command approval (manual policy omits run_tests); inspect exposes 9 local read/clarification tools;
+  research exposes 12, adding existing web/evidence tools. Read-only loops inspect
+  real source, skip baseline tests and architect calls, and reject edits, tests and
+  commands at dispatch. The language router is heuristic; `run --profile inspect`
+  or `research` gives an explicit host-selected boundary. CLI run coding still
+  requires --test-command; interactive manual checks can operate without one. Model/repository content cannot change the selected profile.
+- **Task clarification:** ask_user pauses a live line/TUI loop for numbered choices
+  or free text, then resumes with the user answer. Three questions maximum; mixed
+  question/action batches are refused. No channel or a declined answer finishes
+  needs_input and displays the question. Piped/batch/--exec sessions never prompt.
+  Clarification ledger events omit raw answers; later model messages may repeat them.
+- **Persistent project knowledge:** /remember [--path PATH] FACT saves a host fact;
+  /memory reviews/toggles/clears it; /forget ID removes it. CLI memory REPO ...
+  equivalents need no model. Up to 20 facts, 400 characters each; up to 8 whole
+  facts / 3,000 serialized UTF-8 bytes enter each task-start context, ranked by
+  keyword overlap and recency. General conversation can load this data too.
+  Optional source hashes exclude changed/missing/unsafe source entries from context
+  while keeping them reviewable. Facts are untrusted data, never system instructions.
+  Model tools cannot save or overwrite the private store; no automatic learning.
+  The local ignored .miser/project-knowledge.json store uses POSIX no-follow access,
+  locking, private files, atomic replacement and fsync. No cloud sync or verified
+  Windows support. chat/run --no-memory bypasses loading, including invalid files;
+  corrupt stores otherwise fail closed. Knowledge does not add a model tool (19
+  remain), and MISER does not automatically load this development log memory.md.
+- **External tools:** opt-in HTTP MCP read-only subset; explicit external config,
+  host allowlists and fresh per-call approval. Two generic tools are added only
+  with configuration (11/14/21 schemas); default catalog remains 19. CLI mcp and
+  /mcp provide discovery without a model. Headless calls refuse; MCP tools never
+  enter parallel batches. No stdio/process servers, retries or auto-discovered
+  config. Remote content is untrusted; host classification is not an OS sandbox
+  or proof of remote behavior. Protocol pins: 2026-07-28 default, explicit legacy
+  2025-11-25. See docs/mcp.md for scope, setup, accounting and limits. No live MCP
+  server, Meko connection or model-driven MCP run has been verified.
+- **Timing/host verification policy:** every chat route is visible with its check
+  policy. `/timing` reports latest-prompt wall/model/test/other-tool sums; parallel
+  and nested work can overlap, so sums are not a wall-time partition. Model waits
+  include client retries; failed request durations and missing/cancelled durations
+  are explicit. New task_timing events do not alter receipt billing/count fields.
+  Greetings/questions do not reuse previous ledgers; their timings remain session-local.
+- **Why tests run:** required (default) coding runs baseline and post-edit acceptance
+  checks. Baseline failure is context, not a requirement to proceed. Local reads,
+  recall, greetings, general questions and inspect/research skip acceptance tests.
+  `/checks manual` is a new explicit session-local host choice: no automatic tests,
+  no run_tests schema/dispatch and no optional architect; actual guarded edits end
+  edited_unverified after a final reply. `/checks required` restores the default.
+  `/run` or freshly approved commands remain explicit host test actions. Manual
+  mode can leave code unverified; it is not an automatic text-only exemption.
+  Path/version/sensitive/test-file/approval/command protections remain active.
+- **Observed slow run:** inspected runs/session-d1203faa7bd1/ledger.json without
+  printing file content/secrets. It reports budget_exhausted, baseline 55.635s,
+  six model events totalling 71.533s and failed apply_patch/run_command calls. The
+  supplied screenshot shows 429 retry. Ledger events omit exact tool errors/args,
+  so their precise causes are not established. Source confirms file deletion is
+  unsupported: apply_patch accepts existing-file edits only. UI now displays bounded
+  actual tool errors and instructions forbid trying alternate shell deletion.
+- **Next work:** a guarded, version-checked deletion operation with fresh approval,
+  diff and undo tests; a smaller file-task capability set; smarter host verification
+  selection/cache with complete invalidation. None is implemented yet. DNS/filesystem
+  isolation, compaction and durability issues remain open. Browser/UI verification
+  and budgeted delegated workers remain pending. No successful live speedup measured.
 - `docs/agent-roadmap.md` Phases 1–7 are implemented and covered by tests.
   Phase 5 was exercised against the real services by a host script: a real Tavily
   search returned 3 results and two real page fetches returned HTTP 200 (one of them
   followed a live redirect). A model-driven fetch task is now recorded too
-  (`runs/session-e4d476853be7`, correct cited `Path.read_text` signature and version
-  notes). The injected-instruction half is unit-tested only: it needs a fixture HTTP
-  server, and this host cannot bind sockets.
+  (`runs/session-e4d476853be7`, 18,777 tokens, 3 web calls, legacy `incomplete` status).
+  Its former "correct version notes" claim was too strong: the 3.10 newline claim
+  conflicts with the host's Python 3.12.3 `Path.read_text` API.
+  Unit tests assert untrusted labels and transport, not model resistance to
+  injected instructions. Model behavior remains unverified; local socket listeners
+  cannot run on this host.
 - **Phase 6 is in.** Independent read-only tool calls in one step run on a worker
-  pool (`MAX_PARALLEL_TOOLS=8`) with order-preserving events; `run_tests`,
+  pool (`MAX_PARALLEL_TOOLS=8`); the audit now buffers activity into model order; `run_tests`,
   `write_todos`, edits, `run_command` and `verify_claim` stay sequential. Compaction
   keeps a structured digest per tool result plus a bounded `decisions` deque that is
   re-injected only after a real compaction; the threshold drops from 75% to 55% when
@@ -92,6 +204,397 @@ Last updated: 2026-11-09 (session 9)
 ---
 
 ## Session log
+
+### 2026-11-10 — Consolidated current memory and next-agent handover
+
+- User requested up-to-date memory plus explicit next work. Re-read both documents,
+  checked git HEAD/status, and replaced the old historical Next steps/commands with
+  the actual queue. HEAD remains 6898ab5; substantial later work is uncommitted.
+- Rewrote HANDOVER_PROMPT.md around the current Textual app, interpreter mismatch,
+  timing diagnostics, explicit manual/required checks and unresolved delete/create
+  request. Removed stale flagship-console descriptions and old implementation plans
+  that could trigger redoing completed phases or mislabel live evaluation as synthetic.
+- Defined next deletion increment: checked prior read/version, fresh approval, no
+  rm, honest failure behavior, accurate diffs, safe undo/metadata and temporary-fixture
+  coverage. Follow with smaller file-task capability sets and verification selection;
+  carry DNS/filesystem safety, compaction/durability, live MCP and benchmark gaps.
+- Preserved latest observed 430/81.431s OK as a historical check, not a fresh run.
+  This session changes only memory.md and HANDOVER_PROMPT.md; no implementation or
+  test changes. git diff --check passed for both documents; reference/example
+  diff exclusion was empty. No new full-suite run or live-provider check claimed.
+
+
+### 2026-11-10 — Routing/timing visibility and explicit manual verification
+
+- Baseline full suite: `set -o pipefail; .venv/bin/python -m unittest discover -s
+  tests -q`: 417 in 89.225s OK. New regression checks failed before implementation
+  (missing diagnostics/failed-request durations/manual checks/tool-error visibility).
+- Added host route/policy activity, baseline/test-running states, timing summary
+  and /timing. Model requests include retry waits, tests are not double-counted via
+  run_tests tool wrapper, parallel tool sums are labelled overlapping, missing
+  durations/unfinished requests are explicit. Current ledger only is used. Receipt
+  counters, schema fields, provider usage and evaluation budgets remain unchanged.
+- User's screenshot showed system python launching line fallback. Verified system
+  Python lacks Textual, project .venv has Textual 8.2.8. Startup now prints a complete
+  .venv launch command; README documents activation to keep python3 invocation.
+  No automatic environment execution or system-wide package installation added.
+- Inspected the user's slow run: 55.635s acceptance baseline, 71.533s across six
+  model events, budget_exhausted. Failed tool events retain no error message, so
+  exact arguments/errors cannot be inferred. File deletion is independently proven
+  unsupported by source. User cat.txt/config.json were not read or modified.
+- Added /checks manual|required, required by default each session. Manual avoids
+  automatic baseline/post-edit tests and optional architect, omits/rejects run_tests,
+  and records edited_unverified after edited tasks. /status shows policy; new UI
+  distinguishes skipped checks and baseline passes from post-edit success. Existing
+  shell allowlists, invocation approvals, file/test/version guards are unchanged.
+  Manual is explicit and can leave code unverified; not an OS sandbox. Evaluation
+  defaults and GOLDEN_LIMITS were not changed. No deletion tool or rm permission added.
+- Broad focused integration (latency, terminal, capabilities, agent, UI, isolation,
+  local reads, history, execution, native widget/actual CLI PTY): 166 in 79.541s OK.
+  Final targeted diagnostics/native selections: 16 in 1.149s OK. The earlier focused
+  run caught extra diagnostics on refused ambiguous reads; preserved the existing
+  no-output assertion by delaying local route output until guards pass.
+- Actual native CLI manual-policy PTY at 120×36, provider explicitly simulated:
+  real temporary essay file created, zero tests, two simulated model events,
+  edited_unverified result/timings visible, clean exit. Scratch script:
+  /tmp/miser-manual-pty.py. No live provider calls or speedup benchmark performed.
+- Final full suite: 430 tests in 81.431s OK. Core -S help, diff --check and empty
+  reference/example diff checks passed. Updated UI guide/README/status/roadmap/handover
+  and this memory. No commits/pushes, secrets printed, reference edits or new deps.
+
+
+### 2026-11-10 — User asks what remains and why answering waits for tests
+
+- Re-read Terminal._task, task_profile, run_agent baseline/post-edit paths, current
+  roadmap and open audit findings. Confirmed tests are not universal: local and
+  read-only routes skip them. Coding always runs baseline (does not require it to
+  pass), and post-edit verification may rerun the configured full suite. Even a
+  simple new text file uses that coding path today. Model inference/retries are
+  separate latency sources; no fresh wall-clock/provider speed benchmark was run.
+- Recommended next latency increment: visible routing/timing diagnostics and better
+  read-only classification, followed by an explicit host verification policy for
+  task types. A reusable baseline would require host-controlled invalidation of
+  workspace/test/config/environment inputs and must not silently claim verification
+  for changed or unknown state. This is proposed, not implemented or measured.
+- Remaining: DNS-pinned network transport and descriptor-relative filesystem safety
+  (app guards are not an OS sandbox), compaction of read_many results and power-loss
+  ledger durability, successful live gateway/MCP verification, broader evaluation
+  fixtures and unmet golden limits, optional browser verification/delegated workers,
+  and full conversation resume (currently metrics only, with bounded live history).
+  HTTP MCP read-only tools already exist; live interoperability is unverified.
+- Ran `PYTHONPATH=tests .venv/bin/python -m unittest test_capabilities test_local_reads
+  test_recent_turns -q`: 43 tests in 0.537s, OK. Scripted-provider tests verify routing
+  without live requests. Latest full suite remains the previous 417 in 72.571s OK;
+  not rerun for this documentation-only update. No runtime code changed.
+
+
+### 2026-11-10 — Native Textual application replaces interactive row renderer
+
+- User explicitly requested proper framework architecture; selected optional
+  Textual, kept core deps empty. Installed verified official wheels in ignored
+  project .venv, leaving system Python unchanged. No reference repo touched.
+- CLI now launches native MiserApp; forced --tui prevents silently starting the
+  wrong interface. Existing Terminal backend remains authoritative for models,
+  tools, approvals, budgets and accounting. Dedicated backend thread posts typed
+  messages; presentation adds no model requests. Legacy UI tests remain historical.
+- Added native composer, conversation/semantic activity cards, sidebar, Markdown,
+  link inspection, collapsible diffs, edit/command/MCP/question modals, cancellation,
+  scroll anchoring and guarded multiline JSON history. Explicit approve-all only
+  applies to edits and respects /confirm on. Diff paths escape markup literally.
+- Proven accounting defect: failed informational requests left unknown usage at
+  zero. Regression fails before fix; now marks unknown without counting a completed
+  provider request. Existing safety/ledger regression suite remains green.
+- Actual CLI PTY test has a simulated provider plus trap forbidding live calls;
+  actual version-checked edits and unittest checks fail then pass. An earlier test
+  patched the wrong factory and attempted the unavailable local gateway; corrected
+  before final verification. Separately exercised the unmodified production CLI
+  local routes with zero model/test events, no provider patch.
+- Native tests: 16 in 35.099s OK. Actual CLI PTY final targeted run: 1 in 7.570s OK.
+  Existing focused integration: 202 in 12.877s OK. Final audit/native-PTY focus:
+  43 in 11.612s OK. Final full suite: 417 in 72.571s OK. An initial full run
+  passed 416 in 47.585s; later reruns exposed a /proc test race (416/79.736s,
+  one error) and a premature PTY paint assertion (417/64.611s, one failure).
+  The cleanup probe now treats only disappearing processes as gone, asserts live
+  processes remain live and propagates permission errors. Added deterministic
+  coverage; no assertion skipped. Approval capture now waits for patch/controls.
+  Resize snapshots now wait for footer at the new bottom, not a fixed sleep.
+- Visually inspected actual decoded CLI PTY cell captures at 80×24, 120×36 and
+  160×45 plus 80×24 approval and completed-task receipt. PNGs explicitly label
+  simulated provider; not fabricated mockups, OS screenshots or live-model evidence.
+- Updated README, terminal-ui guide, status, roadmap and handover. Core -S help,
+  native chat help, diff whitespace check and reference/example diff exclusion pass.
+  No commits/pushes, secrets printed, budget/benchmark changes or user cat.txt/config.json
+  changes. Socket listeners, successful live provider behavior and universal emoji/
+  other-OS rendering remain unverified. Cooperative cancellation may wait on HTTP.
+
+
+### 2026-11-10 — UI handoff completed
+
+- Re-ran `set -o pipefail; python3 -m unittest discover -s tests -q` on the current
+  working tree: 399 tests in 19.756s, OK, including the actual PTY integration test.
+  No runtime code was changed during this follow-up. Suite duration is not an
+  agent/provider latency benchmark.
+- Restored explicit keyboard, approval and non-interactive selection documentation
+  in docs/terminal-ui.md, preserving useful operational guidance from the old guide
+  alongside the redesign and actual captured-frame evidence. The older banner,
+  unhighlighted-Markdown and simulated-only layout descriptions were superseded.
+- Updated this memory file. Existing unrelated untracked cat.txt/config.json were
+  left untouched. No new dependency, reference-repository edit, commit or push.
+
+### 2026-11-09 — Terminal reference redesign and actual PTY iteration
+
+- Baseline: `set -o pipefail; python3 -m unittest discover -s tests -q`:
+  378 tests in 13.264s, OK. Captured the old actual PTY at 100x30: welcome, greeting
+  and Ctrl-D exit, status 0. Reviewed small relevant sections of local nested
+  OpenCode session-frame and Aider mdstream sources, read-only. No upstream code
+  was copied substantially, modified, tested or packaged.
+- Kept the existing Rich/layout/input architecture and optional dependency; no
+  required or optional dependency declarations changed. Tested Python 3.12.3 and
+  Rich 13.7.1. Shared parser adapter uses Rich when available; core still imports
+  without site packages. Full Markdown is not claimed for the stdlib fallback.
+- Added tests/test_ui_redesign.py with 20 regressions for rich Markdown, narrow
+  tables, long diffs, fence lengths, source-preserving reflow, stable streaming,
+  distinct model turns, non-streaming answers, shared layout/surfaces, honest
+  status/usage, Unicode input, cursor visibility, cancellation and repaint races.
+  Tests reproduced each behavioral defect before its fix. Existing giant-logo/
+  92-cell layout assertions were updated to exact compact-layout assertions in
+  response to the user's explicit redesign requirements; no tests were skipped.
+- Added tests/test_tui_pty.py: actual POSIX PTY subprocess running Terminal/TuiApp.
+  Greeting and ordinary question, streaming Markdown, resize at 60/80/140 columns,
+  invalid budget error, Ctrl-C during edit approval (file remains absent), then a
+  fresh approved write, actual unittest baseline/post-edit checks, real ledger
+  event counts and clean terminal restoration on Ctrl-D. Provider responses and
+  12-token usage per reply are simulated; no network/gateway/listener was used.
+- An intermediate full run failed (398 tests, 17.417s): the PTY saw a partial
+  response but never its final link. A deterministic regression proved draw()
+  cleared a dirty flag set by a concurrent worker. Clearing before the snapshot
+  fixes the lost repaint without extending timeouts or weakening assertions.
+  Edit approval separately now observes cancellation without another key wakeup.
+- Final regressions: `python3 -m unittest discover -s tests -p test_ui_redesign.py
+  -q`: 20 tests in 0.165s, OK. Actual PTY with capture:
+  `MISER_UI_CAPTURE=/tmp/miser-ui-after.ansi python3 -m unittest discover -s tests
+  -p test_tui_pty.py -q`: 1 test in 2.378s, OK. Focused:
+  `PYTHONPATH=tests python3 -m unittest test_ui_redesign test_tui_pty test_ui
+  test_tui_screen test_tui_app test_recent_turns test_terminal test_agent
+  test_session_isolation test_mcp -q`: 177 tests in 8.925s, OK. Full:
+  `set -o pipefail; python3 -m unittest discover -s tests -q`:
+  399 tests in 11.318s, OK.
+- `python3 -S -m miser --help` and `git diff --check` passed. Tracked diff for
+  opencode/, aider/, examples/ and pyproject.toml was empty. No commit/push.
+  The pre-existing untracked root config.json was not read or modified.
+- Rasterized and visually inspected actual ANSI frames at 140x32 in
+  docs/ui/pty-markdown.png and docs/ui/pty-session.png, explicitly labeled real PTY
+  / simulated provider. These are captured terminal output, not fabricated live
+  screenshots or benchmark evidence. Font rasterization may differ from the user's
+  terminal. Fixture color mode is explicit; product NO_COLOR behavior remains.
+- Updated README, implementation status, handover and docs/terminal-ui.md. Open:
+  live-model interaction, non-POSIX terminal verification, full emoji-grapheme/bidi
+  shaping and actual provider cache/latency measurements. No new model calls are
+  introduced by UI rendering; volatile model_end content does not change billing.
+
+### 2026-11-09 — General file optimization clarification and MCP readiness
+
+- Confirmed the local display route is filename-independent: synthetic app.py,
+  data.json and notes.txt all displayed locally, with no model/model_request/tests
+  events. Existing tests also cover quoted text filenames and unsafe-path refusal.
+  This is bounded guarded text display, not a blanket bypass for arbitrary tasks.
+  Writes still need model reasoning, checked edits and acceptance verification;
+  batched tools exist, but general write latency has not been measured.
+- MCP was already implemented; reviewed rather than rebuilding it. Found and
+  reproduced catalog output exceeding its 10,000-byte cap: omitted names increased
+  a result to 10,105 bytes. Reserve omission metadata before admitting definitions.
+  test_catalog_byte_limit_includes_omitted_tool_names failed before, passed after;
+  it also confirms individual lookup of omitted definitions remains available.
+- Added test_multiple_mcp_calls_stay_sequential_with_fresh_approval: two calls in
+  one model turn each prompt, share cached discovery, record parallel=False, and
+  cannot construct a ThreadPoolExecutor. Simulated transport/model responses only.
+- Baseline: `set -o pipefail; python3 -m unittest discover -s tests -q`:
+  376 tests in 13.650s, OK. Regression: `python3 -m unittest discover -s tests
+  -p test_mcp.py -q`: 25 tests in 0.332s, OK. Focused:
+  `PYTHONPATH=tests python3 -m unittest test_mcp test_agent test_capabilities
+  test_terminal test_session_isolation test_local_reads test_recent_turns -q`:
+  133 tests in 8.748s, OK. Full:
+  `set -o pipefail; python3 -m unittest discover -s tests -q`:
+  378 tests in 13.279s, OK. `python3 -S -m miser mcp --help` and
+  `git diff --check` passed. No new runtime dependency, commit, push or live service.
+- README clarifies general read/write behavior; MCP guide clarifies omission
+  budgeting. Real server integration still requires a host-selected endpoint,
+  tool allowlist and authentication environment reference. No credentials were
+  requested/read/printed and the untracked root config.json was left untouched.
+
+### 2026-11-09 — Recent turns, display and avoidable response latency
+
+- Prioritized the user's context/UI/latency issues before extending MCP further.
+  Baseline `set -o pipefail; python3 -m unittest discover -s tests -q`:
+  360 tests in 13.258s, OK. Existing uncommitted work was preserved; no commits.
+- Added tests/test_recent_turns.py (16 deterministic tests). Reproduced omitted
+  local-read/task context, failed-turn omission, missing history in inspection,
+  clipped code, literal final backticks, styled/wide wrapping overflow and lost
+  continuation styles, long headings/labels, cropped transcript tails and inability
+  to scroll within one long entry. Fixed each at the responsible history/render
+  layer. New coverage also checks empty history, session isolation, bounded context,
+  exact-once messages and refusing compound edits in the local display parser.
+- Final regression command: `python3 -m unittest discover -s tests -p
+  test_recent_turns.py -q`: 16 tests in 0.125s, OK. Focused command:
+  `PYTHONPATH=tests python3 -m unittest test_recent_turns test_terminal test_ui
+  test_tui_app test_tui_screen test_capabilities test_session_isolation
+  test_local_reads test_agent test_mcp test_knowledge -q`:
+  201 tests in 9.119s, OK. Full command:
+  `set -o pipefail; python3 -m unittest discover -s tests -q`:
+  376 tests in 13.372s, OK. Earlier intermediate checks exposed failures and were
+  corrected; no assertion was weakened or test skipped.
+- `git diff --check` passed; `python3 -S -m miser --help` passed without site
+  packages. `git diff --name-only -- opencode aider examples pyproject.toml` was
+  empty. No reference repositories, dependencies, budgets or benchmark limits changed.
+- Extended local parser for the screenshot wording: "i want you to read 4 lines
+  from Readme.md and then print here". It now uses Workspace guards, no model or
+  tests. A single smoke using a synthetic five-line README measured 11.456 ms
+  for that read and 0.057 ms for previous-message recall; model request count 0.
+  This is local smoke evidence, not a provider benchmark or guaranteed speedup.
+- Existing streaming and read-only parallel batching remain enabled. No live
+  provider, cache, MCP or model latency test was run; no socket listener was used.
+  Provider latency/retries and gateway cache support still need real measurements.
+  Layout coverage uses simulated terminal states/keys; interactive visual review
+  and full emoji-grapheme shaping remain open. Historical benchmarks unchanged.
+- Updated README, implementation status, roadmap, handover and this memory file.
+  MCP remains opt-in; browser/UI automation and delegated workers remain pending.
+
+### 2026-11-09 — HTTP MCP discovery and approved read-only calls
+
+- Baseline: `set -o pipefail; python3 -m unittest discover -s tests -q`:
+  337 tests in 13.274s, OK. New regression run reproduced two failures: escaped
+  credentials could bypass serialized-string checking, and TUI shutdown could
+  leave a pending edit approval worker blocked. Decoded-string credential checks
+  and shutdown refusal/release fix both; 23 MCP tests passed (0.204s, later
+  verbose repeat 0.200s). No assertion was weakened or test skipped.
+- Focused: `PYTHONPATH=tests python3 -m unittest test_mcp test_capabilities
+  test_agent test_terminal test_session_isolation test_tui_app test_tui_screen
+  test_audit test_knowledge -q`: 197 tests in 10.857s, OK.
+- Full: `set -o pipefail; python3 -m unittest discover -s tests -q`:
+  360 tests in 13.420s, OK. `git diff --check`, `python3 -m miser mcp --help`
+  and `python3 -m miser chat --help` passed. All MCP transport/key-event results
+  are simulated; no listener, live MCP/model or benchmark run was used.
+- Implemented bounded JSON/SSE HTTP transport, explicit version pins, legacy
+  initialization/session cleanup, tool discovery and allowlisted calls. Credential
+  references are environment names; known values are refused in arguments/config
+  and redacted from results. Ledger events store method/alias/outcome/timing, not
+  URLs, auth, arguments or remote errors. RPC completion is not known billing.
+- Default disabled; POSIX external no-follow config only, no inline credentials,
+  subprocess server command, OAuth, redirects, environment proxies or retries.
+  At most four servers, eight tools/server, 32 RPC attempts/task, eight call attempts
+  plus up to four legacy cleanup requests. Fresh approval cannot be cached or
+  supplied by batch stdin. Server read-only classification remains a host trust
+  decision. Unsupported resources/prompts/sampling/MRTR/custom headers are absent.
+- Updated setup guide, README, implementation status, roadmap and handover.
+  No new runtime dependency, reference-repository changes, commit or push.
+  The pre-existing untracked root config.json was left untouched.
+
+### 2026-11-09 — Persistent project knowledge
+
+- Baseline 317 tests OK (12.845s). Final targeted tests 20 OK (0.259s), focused
+  172 OK (10.664s), full suite 337 OK (13.126s). `python3 -S -m miser memory
+  --help` also passed. No live model calls, remote services or benchmark runs.
+- Added miser/knowledge.py and explicit slash/CLI save, list, forget, clear,
+  on/off commands. Stores bind to the resolved repository path; copied stores from
+  another repository are refused. No model-controlled memory-write tool exists.
+- Context is loaded once at task start, bounded, tagged untrusted and inserted in
+  user/state data. The task, system prompt and tool profile cannot be overwritten
+  by stored text. Plain conversations also get bounded data before the current
+  question. No fact contents are recorded in the new ledger metadata event; the
+  normal prompt diagnostics/budget include loaded context. No extra model calls.
+- Linked facts hash bounded regular UTF-8 source through no-follow descriptor
+  access; changes, deletion, symlinks/FIFOs and inaccessible sources make facts
+  stale/excluded. Unicode facts remain readable rather than escaped in the prompt.
+- POSIX lock serializes writers with a two-second busy timeout. Store writes use
+  private temp files, atomic replacement and fsync; replacement failure leaves the
+  previous store intact and cleans up temp files. Concurrent host-save tests use
+  multiple instances/threads. No power-loss or non-POSIX certification is claimed.
+- Added guards for configured credentials, obvious credential assignments and
+  control characters, including loaded metadata and linked path text. This is not
+  a complete secret scanner. Invalid JSON/schema/depth errors fail closed without
+  echoing contents; explicit clear or --no-memory allows recovery/bypass.
+- Tests cover fresh sessions, repo isolation, context/store bounds, injected text
+  remaining data, stale files, symlinks/FIFOs, concurrency, failed replacement,
+  malformed stores, secret refusal, model write refusal, and CLI/slash/conversation
+  integration. Earlier targeted failures exposed stale-symlink handling, raw
+  metadata credential leakage, Unicode escaping and incomplete review output;
+  all were corrected with assertions retained. Prose apostrophes/quotes are no
+  longer parsed as shell-style tokens by /remember; only an optional path is parsed.
+- Updated README, status, handover, roadmap and this log. Current instruction-size
+  estimates: coding 726 tokens, read-only 218 (UTF-8/4, not billing), excluding
+  state/history/tools. Prior benchmark numbers and golden limits unchanged. No new
+  dependencies, reference-repository changes, commits or pushes. The pre-existing
+  untracked config.json was left untouched. Next is MCP integration.
+
+### 2026-11-09 — Read-only reasoning and in-task clarification
+
+- Reproduced 299 passing tests before changes (12.791s). Added 18 deterministic
+  capability tests; final targeted 18 OK (0.295s), focused 174 OK (11.059s), full
+  317 OK (12.862s). CLI --help also works with site packages disabled (-S).
+- Added inspect/research/coding profiles with shared schema/dispatch allow sets.
+  Read-only requests have no acceptance or architect calls; code questions can
+  inspect actual files instead of answering from only a repository outline.
+  CLI --profile provides explicit enforcement; only coding needs --test-command.
+- Added bounded ask_user questions (500 chars, <=5 choices, <=3 questions per task)
+  and answers (<=2000 chars). Live answers resume the same model context. No input
+  channel/declined answers terminate needs_input after that model call and expose
+  the pending question in CLI/TUI output. No raw answer in clarification events.
+- Added TUI numbered/free-text input and cancellation/EOF release. Reproduced and
+  fixed composer text being overwritten after an answer. Mixed question/tool
+  batches cannot run preplanned writes. Batch/--exec refuses clarification and
+  approval prompts even if stdin or a custom reader is interactive.
+- Routing coverage includes advice vs delegated changes, read-only negation,
+  filenames such as edit.py, discovery tasks, and reviews that mention deletion
+  without authorizing it. Existing conversational tests now use conversation
+  prompts; dedicated new tests cover repository questions. Catalog assertion now
+  expects 19 because ask_user is an intentional addition, not a skipped assertion.
+- Local UTF-8/4 size estimates: coding definitions 1808 + instructions 701 tokens;
+  inspect 789 + 196; research 1064 + 196. These omit state/history/framing and are
+  not provider billing or measured latency savings. All new model/UI checks are
+  scripted/simulated; no live model/service runs were made.
+- README, implementation status, handover and roadmap updated. Next is bounded
+  persistent project knowledge. Runtime dependencies, shell allowlists, file
+  protections, golden limits and numerical benchmark evidence unchanged. Prior
+  uncommitted work retained; no commit or push.
+
+### 2026-11-09 — Local file-read optimization and branding
+
+- Checked `runs/session-1c3a2ba35d89/ledger.json`: baseline acceptance cost 12.942s;
+  three model completions totaled 59.361s, including retry handling. File lookup
+  and read tools took 0.001s each. Receipt total: 7,265 provider-reported tokens.
+- Implemented a conservative full-match route for explicit file displays and
+  first-N-line requests, with no model or acceptance command. Unique case fallback
+  handles Readme.md -> README.md without a repository-wide search. Path/symlink/
+  sensitive-file guards, output limits and per-task receipts are retained.
+- Real local smoke of the exact screenshot request displayed `# MISER` in 0.0026s,
+  with 0 model calls/tokens, 0 test runs and one host read event. This is one local
+  measurement, not an LLM benchmark or a broad latency guarantee.
+- Fixed the N-like pixel M and added a plain MISER caption. Added 9 tests, including
+  TUI entry, guards, case ambiguity, quoted names, output caps and undo preservation.
+  Focused tests caught “show commands” being misrouted; reserved help now takes
+  precedence. Also fixed first-line words inside quoted filenames being mistaken
+  for a line-limit instruction. No assertions were weakened.
+- Verification: baseline 290 OK (12.722s); final local tests 9 OK (0.031s);
+  focused 78 OK (2.517s); full 299 OK (12.652s). An earlier full run failed the
+  help-routing regression before the correction. No live model calls or new deps.
+- Updated README and the ordered capability queue. No commit or push. This file
+  is maintained by the development assistant; MISER does not automatically load
+  or learn this file as cross-session reasoning memory.
+
+### 2026-11-09 — Skeptical audit
+
+- Reproduced a clean `6898ab5` baseline and 249 passing tests. Added 41 audit
+  checks; full suite now passes 290. Focused run passed 180 tests.
+- Fixed checked/staged writes, partial-write recovery, stale patch and same-file
+  version checks, CRLF preservation, hunk offsets and final-newline handling.
+- Enforced program-name validation and fresh approvals, isolated jobs per task,
+  and cleaned up subprocess groups on success, cancellation and interruption.
+- Fixed ordered activity/results, malformed usage/arguments, failure-time test
+  invalidation and evaluation early stop for unmetered responses; repaired undo
+  conflict handling and known-credential web diagnostics; blocked legacy private IPv4.
+- Open boundaries: DNS pinning, same-user path races, no power-loss durability
+  guarantee, model injection resistance and richer compaction digests. No new
+  live calls, dependencies, commits or pushes. Earlier logs remain historical.
 
 ### 2026-11-09 — Session 9: Phase 7 (golden-task evaluation, real runs)
 
@@ -430,47 +933,61 @@ Not verified / not done:
 
 ## Next steps
 
-1. ~~Decide on git~~ — done: re-initialised, `.gitignore` in place, `04f4b8b` committed.
-2. ~~Confirm the gateway works end-to-end~~ — done: smoke run passed, but the
-   Phase 1/2 *baseline* numbers remain unavailable.
-3. ~~Phase 3 — supervised execution~~ — **done and tested** (8 new tests, 208 total).
-   The arbitrary-shell rule is now enforced in code: allowlist prefixes, metacharacter
-   rejection, `shell=False`, per-invocation approval, real exit status,
-   background + stop. Headless runs refuse because there is no approval channel.
-4. ~~Phase 4 — `write_todos` re-emitted each step~~ — **done and tested** (14 new
-   tests, 222 total). Plan is re-injected every step, stale turns get a reminder,
-   and both interfaces render one checklist per update. Not yet exercised by a live
-   model-driven task.
-5. ~~Phase 5 — `web_search` / `fetch_url`~~ — **done and tested** (18 web tests; 241
-   total at the time). Live search and fetch paths exercised; injected-instruction
-   half unit-tested only.
-6. ~~Phase 6 — concurrent read-only tools; tighter compaction~~ — **done and tested**
-   (249 total). Parallel helps network-bound tools (~4× simulated) and costs a little
-   on local reads; decisions survive compaction.
-7. ~~Phase 7 — evaluation harness producing a dated `docs/benchmark-results.md`
-   table (`miser evaluate`)~~ — **done and measured** (docs only, 249 tests still
-   pass). Three real runs recorded; the fixed golden limits are not reachable with
-   the current model/tool surface. Next options: (a) expand the fixture suite to the
-   add-test, cross-file refactor and lint-fix tasks and record those runs; (b) reduce
-   per-call prompt overhead (tool definitions are 1,696 of ≈2,800 fixed tokens) so a
-   6,000-token golden pass becomes plausible; or (c) re-baseline `GOLDEN_LIMITS` to
-   the measured cost and say so explicitly.
+The following are pending, not completed. `HANDOVER_PROMPT.md` contains the detailed
+acceptance contract and commands for a new agent. Do not redo the native TUI.
+
+1. **Immediate feature: guarded file deletion.** The user's delete cat.txt/create
+   cat2.txt essay task is not supported end to end. Implement a dedicated version-
+   checked operation with fresh approval, safe deletion diffs, session tracking and
+   conflict-aware undo. Test rejection, stale reads, symlinks/traversal, sensitive/
+   acceptance paths, empty files, modes/line endings, cancellation and mixed-operation
+   failures using temporary fixtures. Never add rm/arbitrary shell as a workaround;
+   never touch the user's actual untracked cat.txt/config.json as a test.
+2. **Reduce file-task overhead.** Smaller host-enforced capability sets; direct
+   reads for supplied paths and bounded batches; fewer redundant search/todo/model
+   turns. Current /checks manual is explicit and unverified, not an automatic safe
+   file classifier. Do not claim it resolves provider delays or unsupported actions.
+3. **Improve verification selection.** Carefully scoped checks/cache, with complete
+   invalidation and no cached-pass claim for unknown or changed state. Required
+   remains default. Never silently mark skipped/manual edits verified.
+4. **Measure before claiming improvement.** Cover reads, conversation, simple file
+   creation, delete/create, real bug fixes, failed tests, 429 and cancellation.
+   Separate provider-reported usage, local estimates and host duration. Existing
+   streaming/parallel reads are implemented; prompt caching/live speedup is unverified.
+5. **Safety priority alongside feature work.** DNS-pinned transport and descriptor-
+   relative file operations, then ledger crash durability and read_many compaction.
+   These are unresolved audit boundaries; app guards are not an OS sandbox.
+6. **Later capabilities/evidence.** Full conversation resume, successful live
+   gateway/MCP validation, broader evaluation fixtures, browser/UI verification,
+   budgeted delegated workers. Keep golden limits/recorded numbers unchanged.
 
 ## What the user may need to do
 
-- Nothing is blocked on the user for Phase 4. If a future task should run
-  `ruff`/`mypy`, those binaries must actually be installed; the allowlist permits them
-  but does not install them.
-- Live model work should keep using `gemini/gemini-3.5-flash-lite`; the plain
-  `gemini-3.5-flash` route is 429 for tool-bearing requests.
-
----
+- Launch with the project interpreter; system Python lacks Textual. Restart MISER
+  after code changes. Activation lets the familiar python3 command use that venv.
+- For lightweight tasks explicitly choose /checks manual (edits unverified); restore
+  /checks required for coding verification. This does not enable file deletion.
+- A supplied screenshot showed 429 responses; current gateway/model availability
+  was not freshly probed. If a live run is appropriate, use
+  gemini/gemini-3.5-flash-lite, label it real and record actual results.
 
 ## Useful commands
 
+Run from `/home/aman-kumar-sharma/Desktop/fresh-code`:
+
 ```bash
-python3 -m unittest discover -s tests -q          # full suite
-python3 -m unittest tests.test_workspace -q       # focused
-python3 -m miser                                   # TUI
-python3 -m miser --no-tui                          # line interface
+.venv/bin/python -m miser chat . --tui
+# Alternative for this terminal session:
+source .venv/bin/activate
+python3 -m miser chat . --tui
+
+# Verification before the next implementation:
+set -o pipefail; .venv/bin/python -m unittest discover -s tests -q
+PYTHONPATH=tests .venv/bin/python -m unittest test_latency test_execution test_workspace test_terminal -q
+python3 -S -m miser --help
+.venv/bin/python -m miser chat . --no-tui
+git diff --check
 ```
+
+The recorded latest full suite is 430/81.431s OK, not rerun for this documentation
+update. HEAD is still 6898ab5; later work is uncommitted. Preserve the working tree.

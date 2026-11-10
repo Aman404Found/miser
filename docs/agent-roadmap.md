@@ -9,11 +9,11 @@ or a specific place in MISER's loop, not about model quality.
 
 ---
 
-## 1. The honest framing: this is a tool-surface problem, not a model problem
+## 1. Original hypothesis: tool design affects task performance
 
-MISER and Buffy can be pointed at the same model. When Buffy edits six files and
-MISER fails on one, the difference is almost never the model. It is that the
-harness gives the model a different problem to solve.
+Harness design can change task performance, but this repository has no controlled
+MISER-versus-Buffy comparison establishing causation. The analysis below is a
+historical design hypothesis, not a measured model-quality conclusion.
 
 MISER's edit loop asks the model to reproduce file bytes exactly:
 
@@ -21,8 +21,8 @@ MISER's edit loop asks the model to reproduce file bytes exactly:
 edit(path, old, new)   →  old must appear exactly once
 ```
 
-To satisfy that, the model must already *know* the exact bytes. MISER's only way to
-learn them is `zoom(path, level=2)` or `recall`, one file and one region at a time,
+To satisfy that, the model must already *know* the exact bytes. The original tool surface used `zoom(path, level=2)` or `recall`, one file and
+one region at a time (current MISER also supports `read_many`),
 and the result is formatted as prose-ish text the model has to re-parse. Every
 extra file is another round trip, another chance to mis-copy a blank line, and
 another full prompt rebuild (MISER rebuilds the system prompt and history on each
@@ -49,8 +49,8 @@ Three properties do the work:
    edit usually succeeds on the next attempt because the error text is actionable.
 
 MISER already has this instinct in `Workspace` (whitespace-tolerant matching,
-nearest-line diagnostics, exact-edit safeguards). What it lacks is *breadth*: one
-file per call, no batched read, no glob/search primitive that returns line windows.
+nearest-line diagnostics, exact-edit safeguards). The breadth gaps described here motivated the now-implemented batched reads,
+globs and scoped context search.
 
 ### Why the tool calling looks strong
 
@@ -76,32 +76,26 @@ needs to succeed*, and by *how often a single mistake is recoverable in one turn
 
 ---
 
-## 2. Tools MISER does not have
+## 2. Current tools and remaining gaps
 
-MISER currently exposes 11 tools: `repo_map`, `list_files`, `search`, `zoom`,
-`recall`, `edit`, `edit_batch`, `apply_patch`, `blast_radius`, `run_tests`,
-`verify_claim`. They run serially, one call at a time, in `for call in calls:`.
+Current MISER has a 19-tool catalog, including `ask_user`, with 9/12/19 tools exposed
+for inspect/research/coding profiles. Only batches made entirely of `READ_ONLY_TOOLS`
+run concurrently; edits, tests, commands, verification and todo updates stay sequential.
 
-| Capability | Buffy tool | MISER today | Effect of the gap |
-| --- | --- | --- | --- |
-| Batched, windowed reads | `read_files` (list of paths, `offset`/`limit`) | `zoom` (one region), `recall` | N files cost N turns |
-| Multi-file atomic edit | `str_replace` (list of replacements) | `edit_batch` (same file), `apply_patch` (diff only) | Cross-file changes need several model turns |
-| Whole-file write | `write_file` | none (must diff against existing content) | New files are awkward |
-| Regex content search | `code_search` with `flags`, `cwd`, context lines | `search` (narrower) | Discovery is slower and noisier |
-| Path globbing | `glob` | `list_files` | Cannot ask "all `tests/**/*.py`" directly |
-| Directory listing | `list_directory` | `list_files` | No cheap structural probe |
-| Command execution | `run_terminal_command` (SYNC/BACKGROUND, exit status, logs) | `run_tests` (fixed acceptance command only) | No lint, no typecheck, no repro scripts |
-| Task tracking | `write_todos` | none | Long tasks lose the plan |
-| Web search / fetch | `web_search`, `read_url` | `web_search`, `fetch_url` (Phase 5) | Live Tavily/fetch run still unrecorded |
-| Doc lookup | `context7` | none | API details must come from memory |
-| Memory / knowledge base | `meko` tools | none | No cross-session learning |
-| Browser automation | `playwright`, `chrome-devtools` | none | No UI verification |
-| Clarifying question | `ask_user` | none | Ambiguity is guessed at, not asked |
-| Service discovery | `gravity_index` | none | Integration choices are invented |
+| Capability | Current implementation | Remaining limitation |
+| --- | --- | --- |
+| Batched reads | `read_many`, up to 8 windows | Bounded output can truncate |
+| Multi-file changes | `edit_batch`, `apply_patch` | Atomic per file; best-effort rollback, not crash-atomic |
+| New files | `write_file` | Existing files require checked edits |
+| Discovery | `search` with scope/context, `find_files` | Literal search; no regex content search |
+| Commands | `run_command`, allowlisted argv and fresh approval | Headless mode refuses; not an OS sandbox |
+| Plans | `write_todos` | Prompt reminders cannot prove tasks completed |
+| Task clarification | `ask_user`, numbered choices or free text | Live task resumes after an answer; headless/declined questions stop as needs_input |
+| Web | `web_search`, `fetch_url`, `verify_claim` | DNS destinations not pinned; labels do not prove injection resistance |
+| External capabilities | Opt-in HTTP MCP discovery/calls with host allowlists and fresh approval | Read-only subset; no live service connection verified; browser absent |
 
-Note the deliberate constraint: MISER must not have *model-controlled arbitrary
-shell execution*. `run_terminal_command` in the table is therefore not a straight
-port — Phase 3 below specifies a supervised variant.
+MISER must not have *model-controlled arbitrary shell execution*. Its command
+tool is the supervised variant described in Phase 3 below.
 
 ---
 
@@ -126,7 +120,7 @@ five-file read is one call. Both counted from the ledger, before and after.
 ### Phase 2 — Edit reliability
 
 > **Status (2026-11-09): implemented.** `write_file` creates new files through the
-> same guard/approval path; `edit_batch` was already atomic with rollback; failed
+> same guard/approval path; `edit_batch` stages writes with best-effort rollback; failed
 > edits now include the nearest matching numbered region. The failure-rate
 > acceptance measurement has not been recorded yet.
 
@@ -142,8 +136,7 @@ batch leaves a modified file behind (verified by hash).
 
 Add a command tool whose binaries come from a user-approved allowlist
 (`python3 -m unittest`, `pytest`, `ruff`, `mypy`, `node --test`, `git status`,
-`git diff`), each invocation shown for approval unless the user has opted into
-that specific command. Capture stdout, stderr and the real exit status. Support a
+`git diff`), each invocation shown for fresh approval. Capture stdout, stderr and the real exit status. Support a
 background mode with a log file and an explicit stop.
 
 This is the phase where the no-arbitrary-shell rule must be enforced in code, not
@@ -155,8 +148,7 @@ refused with a clear message; exit status is preserved through the pipeline; a
 background job is startable and stoppable.
 
 > **Status (2026-11-09): implemented.** `miser/execution.py` holds the allowlist,
-> metacharacter rejection, `shell=False` spawning, per-invocation approval (with
-> "always" for an exact argv), real exit status, sanitised child environment, and
+> metacharacter rejection, `shell=False` spawning, fresh per-invocation approval (no cached approval), real exit status, sanitised child environment, and
 > background jobs with a log file plus stop. `tests/test_execution.py` covers every
 > clause of the acceptance sentence above (8 tests; 208 total passing). The headless
 > `run` path has no approval channel and therefore refuses, by design. What is not
@@ -209,10 +201,12 @@ a fixture page).
 > redirect, confirming redirect re-validation. A Stack Overflow hit returned HTTP 403
 > (site bot protection) and the tool surfaced the error rather than retrying.
 > Recorded live afterwards: session `runs/session-e4d476853be7` answered from a
-> fetched `docs.python.org` page (correct `Path.read_text` signature and version
-> notes, URL cited) in 4 model requests, 4 tool calls and 18,777 provider tokens.
-> The injected-instruction half remains unit-tested only: exercising it needs a
-> fixture HTTP server, and this host cannot bind sockets.
+> fetched `docs.python.org` page (answer reportedly cites the URL) in 4 model requests,
+> 4 tool calls and 18,777 provider tokens. Citation alone does not prove correctness;
+> the former 3.10 `read_text(newline=...)` claim conflicts with this host's 3.12.3 API.
+> Unit tests verify untrusted labels and returned text, not whether a model ignores
+> injected instructions. That behavioral acceptance remains unverified. The host
+> cannot bind a local fixture listener; simulated transport needs no listener.
 
 ### Phase 6 — Parallelism and context
 
@@ -226,11 +220,11 @@ session keeps its earlier decisions in context.
 > **Status (2026-11-09): implemented and measured.** A step whose calls all parse,
 > all belong to `READ_ONLY_TOOLS`, and number two or more now runs on a small worker
 > pool (`MAX_PARALLEL_TOOLS=8`) inside `run_agent`; starts are announced on the main
-> thread in model order, results arrive via `as_completed`, and tool messages,
+> thread in model order, completions arrive via `as_completed`, activity results are buffered into model order, and tool messages,
 > `memory.observe` and the `tests_passed` early exit are emitted in call order, so
 > the transcript is identical to a sequential step. `run_tests`, `write_todos`,
 > edits, `run_command` and `verify_claim` stay sequential. A `tool_batch` ledger
-> event records the model-visible latency of each batch.
+> event records tool names, count, step and parallel flag; it has no batch-latency field.
 >
 > Compaction now stores a structured digest (`compact_digest`) of each compacted
 > tool output plus a bounded `decisions` deque, and the decisions are re-injected
@@ -245,7 +239,8 @@ session keeps its earlier decisions in context.
 > already takes microseconds. With a simulated 150 ms per-call latency (labelled,
 > not a real service), four calls took 601 ms sequential versus 151 ms parallel,
 > about 4.0×. So the win is for network-bound tools (`web_search`, `fetch_url`),
-> and local reads pay a small overhead; outputs were byte-identical either way.
+> and local reads pay a small overhead; outputs were reported byte-identical either way.
+> Simulated latency does not establish a speedup for a real remote service.
 > 249 tests pass (`python3 -m unittest discover -s tests -q`). No live concurrency
 > timing was recorded against a real remote tool because this host cannot bind
 > sockets.
@@ -285,10 +280,69 @@ real numbers and a stated date, replacing any estimates.
 
 ---
 
-## 4. What to do first
+## 4. What to do next
 
-Phase 1 plus Phase 2. Everything else is convenience; batched reads and
-transactional multi-file edits are the two changes that convert MISER's "one file,
-retry on failure" loop into Buffy's "many files, verify once" loop. Phase 3 is the
-highest-value *new* capability, but it carries the most risk because it touches the
-shell-execution rule, so it should land after the edit path is trustworthy.
+Phases 1–7 have implementations; several acceptance measurements remain missing.
+Use [the audit report](audit-report.md) to prioritize unresolved safety boundaries,
+then measure failure recovery and add real cross-file tasks before claiming parity.
+
+### Optimization and capability queue (2026-11-09)
+
+Follow-up: live-session context now spans local reads and agent tasks as well as
+conversation; exact previous-message queries run locally. The screenshot's
+four-line request wording also bypasses models/tests. Terminal code wrapping,
+streamed fences, styled Unicode text and transcript resize/scroll behavior have
+regression coverage. See implementation-status.md for bounds and measured local
+smoke timings; no provider latency or cache improvement is established.
+
+The slow README example was a routing failure: its recorded run spent 12.942 seconds
+in baseline tests and 59.361 seconds across three model completions (including retry
+handling), totaling about 72.3 seconds. The two file tools each took about 1 ms.
+Its ledger reports 7,265 provider tokens; these are recorded numbers, not estimates.
+
+| Order | Capability | State / concrete next increment |
+| --- | --- | --- |
+| 1 | Local deterministic file reads | Implemented: simple display/first-lines requests bypass models/tests, retain guards and record a local receipt. Symmetric M logo plus explicit MISER caption fixes the N-like glyph. |
+| 2 | Capability-aware model requests | Implemented: inspect/research/coding profiles expose 9/12/19 tools. Read-only loops inspect actual evidence, skip tests/architect calls and reject edits/commands/tests at dispatch. CLI --profile overrides language-based inference. |
+| 3 | Clarification during a task | Implemented: ask_user pauses line/TUI tasks for numbered options or free text, then continues with the answer. Three-question limit; no mixed batches; headless/declined input stops with needs_input. |
+| 4 | Persistent project knowledge | Implemented: host-managed /remember, /memory, /forget plus CLI equivalents; bounded per-repository facts load as untrusted data. Optional source hashes exclude stale facts. No automatic learning, model writes or loading of development memory.md. |
+| 5 | External tool discovery/integrations | Implemented HTTP MCP read-only subset: explicit external host config, discovery, allowlists, fresh approval, untrusted output and bounded JSON/SSE. No subprocess servers or runtime dependencies. Live server/Meko connection remains unverified; see [MCP guide](mcp.md). |
+| 6 | Browser/UI verification | Optional host-controlled browser inspection/screenshots and meaningful UI acceptance checks. No browser tool currently exists in MISER. |
+| 7 | Delegated workers | Budgeted, observable read-only research/review workers before any concurrent editing; current parallel tool calls are not independent agents. |
+
+These are separate increments, not a claim that all are implemented. Preserve the
+audit's unresolved DNS/filesystem isolation work alongside this capability queue.
+Do not loosen command approval or edit safeguards to imitate broader tool access.
+
+Local size diagnostics for the profiles (UTF-8 bytes / 4 estimates, not billing):
+coding tool definitions 1,808 tokens + instructions 726; inspect 789 + 218;
+research 1,064 + 218 (after the project-knowledge instruction was added). These exclude user/state/history/framing and do not establish
+provider token savings, model reliability or real wall-clock speedup. New coverage
+uses scripted provider responses, synthetic usage and simulated TUI key events;
+no live model/service evaluation was made for these capabilities.
+
+Persistent project facts add context only when saved/enabled: at most 8 facts and
+3,000 serialized UTF-8 bytes from a 20-fact, 400-character-per-fact store. Selection
+uses keyword overlap and recency. Source-linked entries require unchanged readable
+UTF-8 contents; stale entries remain reviewable but are excluded. This is local
+POSIX persistence, not cloud/Meko sync, semantic truth verification or replay of
+old model conversations. Model requests include the actual selected context in
+their normal budget diagnostics; no extra summary/model call is added.
+
+### Native terminal application (2026-11-10)
+
+The interactive CLI now launches Textual with native layout, Markdown, scrolling,
+multiline input and modal approvals. The previous Rich row UI is superseded.
+Actual CLI PTY verification covers 80×24, 120×36 and 160×45 using a simulated
+provider and real backend edits/tests; a separate unmodified CLI check covers
+local actions without provider calls. See [UI evidence](terminal-ui.md). Browser
+automation and delegated workers in the capability queue remain unimplemented.
+
+### Explicit latency controls (2026-11-10)
+
+Implemented route/timing diagnostics and /timing. /checks manual is an opt-in host
+policy for skipping automatic tests/architect, with edited_unverified outcomes;
+/checks required remains default. Existing guards and evaluation thresholds remain.
+Next: guarded file deletion (currently unsupported), fewer file-task round trips,
+and carefully invalidated verification selection/cache. Provider 429 latency is
+not solved by local timing or UI changes. See terminal-ui.md for verification.

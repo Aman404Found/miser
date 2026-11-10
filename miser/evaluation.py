@@ -90,8 +90,8 @@ def evaluate_fixtures(directory, client, model, repeats=1, languages=("python", 
             report["summary"] = summarize(report["runs"])
             write_json(directory / "report.json", report)
             # A transport/auth failure should not trigger more paid retries.
-            if row["receipt"]["failed_model_requests"]:
-                report["stopped_early"] = "Model request failed; inspect gateway before retrying"
+            if row["receipt"]["failed_model_requests"] or not row["receipt"]["usage_complete"]:
+                report["stopped_early"] = "Model request failed or usage unknown; inspect gateway before retrying"
                 write_json(directory / "report.json", report)
                 return report
     return report
